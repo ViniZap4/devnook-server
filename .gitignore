@@ -1,0 +1,6 @@
+/devnook-server
+/repos/
+.env
+.env.*
+!.env.example
+.DS_Store
