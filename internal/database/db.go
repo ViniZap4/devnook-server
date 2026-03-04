@@ -33,7 +33,10 @@ func Migrate(pool *pgxpool.Pool) error {
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		);
 
-		-- Backfill: if column was just added and first user exists, make them admin
+		-- Add is_admin column to existing tables that lack it
+		ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT false;
+
+		-- Backfill: make first user admin if none exist yet
 		UPDATE users SET is_admin = true WHERE id = (SELECT MIN(id) FROM users) AND NOT EXISTS (SELECT 1 FROM users WHERE is_admin = true);
 
 		CREATE TABLE IF NOT EXISTS repositories (
