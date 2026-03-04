@@ -28,9 +28,13 @@ func Migrate(pool *pgxpool.Pool) error {
 			password   TEXT NOT NULL,
 			full_name  TEXT NOT NULL DEFAULT '',
 			avatar_url TEXT NOT NULL DEFAULT '',
+			is_admin   BOOLEAN NOT NULL DEFAULT false,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		);
+
+		-- Backfill: if column was just added and first user exists, make them admin
+		UPDATE users SET is_admin = true WHERE id = (SELECT MIN(id) FROM users) AND NOT EXISTS (SELECT 1 FROM users WHERE is_admin = true);
 
 		CREATE TABLE IF NOT EXISTS repositories (
 			id          BIGSERIAL PRIMARY KEY,

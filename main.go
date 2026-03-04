@@ -46,6 +46,8 @@ func main() {
 	r.Get("/api/v1/health", h.Health)
 
 	r.Route("/api/v1/auth", func(r chi.Router) {
+		r.Get("/setup", h.NeedsSetup)
+		r.Post("/setup", h.Setup)
 		r.Post("/register", h.Register)
 		r.Post("/login", h.Login)
 	})
