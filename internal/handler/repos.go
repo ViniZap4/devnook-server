@@ -12,11 +12,22 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
+func (h *Handler) scanRepo(rows interface{ Scan(...any) error }) (domain.Repository, error) {
+	var repo domain.Repository
+	err := rows.Scan(&repo.ID, &repo.OwnerID, &repo.Owner, &repo.Name, &repo.Description, &repo.Website,
+		&repo.IsPrivate, &repo.IsFork, &repo.ForkedFromID, &repo.DefaultBranch, &repo.Topics,
+		&repo.StarsCount, &repo.ForksCount, &repo.OrgID, &repo.CreatedAt, &repo.UpdatedAt)
+	return repo, err
+}
+
+const repoSelectColumns = `r.id, r.owner_id, COALESCE(o.name, u.username) as owner, r.name, r.description, r.website,
+	r.is_private, r.is_fork, r.forked_from_id, r.default_branch, r.topics,
+	r.stars_count, r.forks_count, r.org_id, r.created_at, r.updated_at`
+
 func (h *Handler) ListRepos(w http.ResponseWriter, r *http.Request) {
 	claims := getClaims(r)
-	// Include user-owned repos AND repos from orgs the user belongs to
 	rows, err := h.db.Query(context.Background(),
-		`SELECT r.id, r.owner_id, COALESCE(o.name, u.username) as owner, r.name, r.description, r.is_private, r.default_branch, r.org_id, r.created_at, r.updated_at
+		`SELECT `+repoSelectColumns+`
 		 FROM repositories r
 		 JOIN users u ON r.owner_id = u.id
 		 LEFT JOIN organizations o ON o.id = r.org_id
@@ -31,9 +42,8 @@ func (h *Handler) ListRepos(w http.ResponseWriter, r *http.Request) {
 
 	var repos []domain.Repository
 	for rows.Next() {
-		var repo domain.Repository
-		if err := rows.Scan(&repo.ID, &repo.OwnerID, &repo.Owner, &repo.Name, &repo.Description,
-			&repo.IsPrivate, &repo.DefaultBranch, &repo.OrgID, &repo.CreatedAt, &repo.UpdatedAt); err != nil {
+		repo, err := h.scanRepo(rows)
+		if err != nil {
 			continue
 		}
 		repos = append(repos, repo)
@@ -73,7 +83,6 @@ func (h *Handler) CreateRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Initialize bare git repo on disk
 	repoPath := filepath.Join(h.cfg.ReposPath, claims.Username, req.Name+".git")
 	if err := os.MkdirAll(repoPath, 0o755); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create repo directory")
@@ -85,7 +94,7 @@ func (h *Handler) CreateRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, map[string]interface{}{
+	writeJSON(w, http.StatusCreated, map[string]any{
 		"id":        repoID,
 		"name":      req.Name,
 		"clone_url": fmt.Sprintf("%s/%s/%s.git", r.Host, claims.Username, req.Name),
@@ -96,29 +105,78 @@ func (h *Handler) GetRepo(w http.ResponseWriter, r *http.Request) {
 	owner := chi.URLParam(r, "owner")
 	name := chi.URLParam(r, "name")
 
-	var repo domain.Repository
 	// Try user-owned first
-	err := h.db.QueryRow(context.Background(),
-		`SELECT r.id, r.owner_id, u.username, r.name, r.description, r.is_private, r.default_branch, r.org_id, r.created_at, r.updated_at
+	row := h.db.QueryRow(context.Background(),
+		`SELECT `+repoSelectColumns+`
 		 FROM repositories r JOIN users u ON r.owner_id = u.id
-		 WHERE u.username = $1 AND r.name = $2 AND r.org_id IS NULL`, owner, name,
-	).Scan(&repo.ID, &repo.OwnerID, &repo.Owner, &repo.Name, &repo.Description,
-		&repo.IsPrivate, &repo.DefaultBranch, &repo.OrgID, &repo.CreatedAt, &repo.UpdatedAt)
+		 LEFT JOIN organizations o ON o.id = r.org_id
+		 WHERE u.username = $1 AND r.name = $2 AND r.org_id IS NULL`, owner, name)
+	repo, err := h.scanRepo(row)
 	if err != nil {
 		// Try org-owned
-		err = h.db.QueryRow(context.Background(),
-			`SELECT r.id, r.owner_id, o.name, r.name, r.description, r.is_private, r.default_branch, r.org_id, r.created_at, r.updated_at
+		row = h.db.QueryRow(context.Background(),
+			`SELECT r.id, r.owner_id, o.name, r.name, r.description, r.website,
+			        r.is_private, r.is_fork, r.forked_from_id, r.default_branch, r.topics,
+			        r.stars_count, r.forks_count, r.org_id, r.created_at, r.updated_at
 			 FROM repositories r
 			 JOIN organizations o ON o.id = r.org_id
-			 WHERE o.name = $1 AND r.name = $2`, owner, name,
-		).Scan(&repo.ID, &repo.OwnerID, &repo.Owner, &repo.Name, &repo.Description,
-			&repo.IsPrivate, &repo.DefaultBranch, &repo.OrgID, &repo.CreatedAt, &repo.UpdatedAt)
+			 LEFT JOIN users u ON r.owner_id = u.id
+			 WHERE o.name = $1 AND r.name = $2`, owner, name)
+		repo, err = h.scanRepo(row)
 		if err != nil {
 			writeError(w, http.StatusNotFound, "repository not found")
 			return
 		}
 	}
 	writeJSON(w, http.StatusOK, repo)
+}
+
+type updateRepoRequest struct {
+	Description   *string  `json:"description,omitempty"`
+	Website       *string  `json:"website,omitempty"`
+	IsPrivate     *bool    `json:"is_private,omitempty"`
+	DefaultBranch *string  `json:"default_branch,omitempty"`
+	Topics        []string `json:"topics,omitempty"`
+}
+
+func (h *Handler) UpdateRepo(w http.ResponseWriter, r *http.Request) {
+	claims := getClaims(r)
+	owner := chi.URLParam(r, "owner")
+	name := chi.URLParam(r, "name")
+
+	if owner != claims.Username {
+		writeError(w, http.StatusForbidden, "not your repository")
+		return
+	}
+
+	var req updateRepoRequest
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	ctx := context.Background()
+	if req.Description != nil {
+		h.db.Exec(ctx, `UPDATE repositories SET description=$1, updated_at=NOW() WHERE owner_id=$2 AND name=$3`,
+			*req.Description, claims.UserID, name)
+	}
+	if req.Website != nil {
+		h.db.Exec(ctx, `UPDATE repositories SET website=$1, updated_at=NOW() WHERE owner_id=$2 AND name=$3`,
+			*req.Website, claims.UserID, name)
+	}
+	if req.IsPrivate != nil {
+		h.db.Exec(ctx, `UPDATE repositories SET is_private=$1, updated_at=NOW() WHERE owner_id=$2 AND name=$3`,
+			*req.IsPrivate, claims.UserID, name)
+	}
+	if req.DefaultBranch != nil {
+		h.db.Exec(ctx, `UPDATE repositories SET default_branch=$1, updated_at=NOW() WHERE owner_id=$2 AND name=$3`,
+			*req.DefaultBranch, claims.UserID, name)
+	}
+	if req.Topics != nil {
+		h.db.Exec(ctx, `UPDATE repositories SET topics=$1, updated_at=NOW() WHERE owner_id=$2 AND name=$3`,
+			req.Topics, claims.UserID, name)
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *Handler) DeleteRepo(w http.ResponseWriter, r *http.Request) {
@@ -138,7 +196,6 @@ func (h *Handler) DeleteRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Remove bare repo from disk
 	repoPath := filepath.Join(h.cfg.ReposPath, owner, name+".git")
 	os.RemoveAll(repoPath)
 

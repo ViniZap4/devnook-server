@@ -17,6 +17,9 @@ type updateProfileRequest struct {
 	FullName  string `json:"full_name"`
 	Email     string `json:"email"`
 	AvatarURL string `json:"avatar_url"`
+	Bio       string `json:"bio"`
+	Location  string `json:"location"`
+	Website   string `json:"website"`
 }
 
 type dashboardStatsResponse struct {
@@ -39,10 +42,10 @@ func (h *Handler) GetUserProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get user's public repos
 	rows, err := h.db.Query(context.Background(),
-		`SELECT r.id, r.owner_id, u.username, r.name, r.description, r.is_private, r.default_branch, r.org_id, r.created_at, r.updated_at
+		`SELECT `+repoSelectColumns+`
 		 FROM repositories r JOIN users u ON r.owner_id = u.id
+		 LEFT JOIN organizations o ON o.id = r.org_id
 		 WHERE u.username = $1 AND r.is_private = false AND r.org_id IS NULL
 		 ORDER BY r.updated_at DESC`, username)
 	if err != nil {
@@ -53,9 +56,8 @@ func (h *Handler) GetUserProfile(w http.ResponseWriter, r *http.Request) {
 
 	var repos []domain.Repository
 	for rows.Next() {
-		var repo domain.Repository
-		if err := rows.Scan(&repo.ID, &repo.OwnerID, &repo.Owner, &repo.Name, &repo.Description,
-			&repo.IsPrivate, &repo.DefaultBranch, &repo.OrgID, &repo.CreatedAt, &repo.UpdatedAt); err != nil {
+		repo, err := h.scanRepo(rows)
+		if err != nil {
 			continue
 		}
 		repos = append(repos, repo)
