@@ -174,9 +174,110 @@ func (h *Handler) AdminStats(w http.ResponseWriter, r *http.Request) {
 	h.db.QueryRow(ctx, `SELECT COUNT(*) FROM issues`).Scan(&issueCount)
 
 	writeJSON(w, http.StatusOK, map[string]int{
-		"users":         userCount,
-		"repositories":  repoCount,
-		"organizations": orgCount,
-		"issues":        issueCount,
+		"total_users":  userCount,
+		"total_repos":  repoCount,
+		"total_orgs":   orgCount,
+		"total_issues": issueCount,
 	})
+}
+
+func (h *Handler) AdminListRepos(w http.ResponseWriter, r *http.Request) {
+	if !h.requireAdmin(w, r) {
+		return
+	}
+
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	if page < 1 {
+		page = 1
+	}
+	perPage := 50
+	offset := (page - 1) * perPage
+	q := r.URL.Query().Get("q")
+	ctx := context.Background()
+
+	var totalCount int
+	if q != "" {
+		h.db.QueryRow(ctx,
+			`SELECT COUNT(*) FROM repositories r WHERE r.name ILIKE '%' || $1 || '%' OR r.description ILIKE '%' || $1 || '%'`, q,
+		).Scan(&totalCount)
+	} else {
+		h.db.QueryRow(ctx, `SELECT COUNT(*) FROM repositories`).Scan(&totalCount)
+	}
+
+	baseSelect := `SELECT ` + repoSelectColumns + `
+		FROM repositories r
+		JOIN users u ON r.owner_id = u.id
+		LEFT JOIN organizations o ON o.id = r.org_id`
+
+	var query string
+	var args []any
+	if q != "" {
+		query = baseSelect + ` WHERE r.name ILIKE '%' || $1 || '%' OR r.description ILIKE '%' || $1 || '%' ORDER BY r.updated_at DESC LIMIT $2 OFFSET $3`
+		args = []any{q, perPage, offset}
+	} else {
+		query = baseSelect + ` ORDER BY r.updated_at DESC LIMIT $1 OFFSET $2`
+		args = []any{perPage, offset}
+	}
+
+	rows, err := h.db.Query(ctx, query, args...)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list repos")
+		return
+	}
+	defer rows.Close()
+
+	var repos []domain.Repository
+	for rows.Next() {
+		repo, err := h.scanRepo(rows)
+		if err != nil {
+			continue
+		}
+		repos = append(repos, repo)
+	}
+	if repos == nil {
+		repos = []domain.Repository{}
+	}
+
+	totalPages := (totalCount + perPage - 1) / perPage
+	if totalPages < 1 {
+		totalPages = 1
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"repos":       repos,
+		"total_count": totalCount,
+		"page":        page,
+		"per_page":    perPage,
+		"total_pages": totalPages,
+	})
+}
+
+func (h *Handler) AdminListOrgs(w http.ResponseWriter, r *http.Request) {
+	if !h.requireAdmin(w, r) {
+		return
+	}
+
+	ctx := context.Background()
+	rows, err := h.db.Query(ctx,
+		`SELECT id, name, display_name, description, avatar_url, created_at, updated_at
+		 FROM organizations ORDER BY created_at DESC`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list organizations")
+		return
+	}
+	defer rows.Close()
+
+	var orgs []domain.Organization
+	for rows.Next() {
+		var o domain.Organization
+		if err := rows.Scan(&o.ID, &o.Name, &o.DisplayName, &o.Description, &o.AvatarURL,
+			&o.CreatedAt, &o.UpdatedAt); err != nil {
+			continue
+		}
+		orgs = append(orgs, o)
+	}
+	if orgs == nil {
+		orgs = []domain.Organization{}
+	}
+	writeJSON(w, http.StatusOK, orgs)
 }

@@ -217,6 +217,8 @@ func main() {
 			r.Get("/users/{username}", h.AdminGetUser)
 			r.Put("/users/{username}", h.AdminUpdateUser)
 			r.Delete("/users/{username}", h.AdminDeleteUser)
+			r.Get("/repos", h.AdminListRepos)
+			r.Get("/orgs", h.AdminListOrgs)
 		})
 	})
 
