@@ -147,6 +147,54 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, authResponse{Token: token, User: user})
 }
 
+func (h *Handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
+	claims := getClaims(r)
+
+	var req struct {
+		OldPassword string `json:"old_password"`
+		NewPassword string `json:"new_password"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.OldPassword == "" || req.NewPassword == "" {
+		writeError(w, http.StatusBadRequest, "old_password and new_password are required")
+		return
+	}
+	if len(req.NewPassword) < 6 {
+		writeError(w, http.StatusBadRequest, "new password must be at least 6 characters")
+		return
+	}
+
+	// Verify current password
+	var hash string
+	err := h.db.QueryRow(context.Background(),
+		`SELECT password FROM users WHERE id = $1`, claims.UserID,
+	).Scan(&hash)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "user not found")
+		return
+	}
+
+	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(req.OldPassword)); err != nil {
+		writeError(w, http.StatusUnauthorized, "current password is incorrect")
+		return
+	}
+
+	newHash, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to hash password")
+		return
+	}
+
+	h.db.Exec(context.Background(),
+		`UPDATE users SET password = $1, updated_at = NOW() WHERE id = $2`,
+		string(newHash), claims.UserID)
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (h *Handler) GetCurrentUser(w http.ResponseWriter, r *http.Request) {
 	claims := getClaims(r)
 	var user domain.User

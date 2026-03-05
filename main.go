@@ -81,6 +81,7 @@ func main() {
 		// User
 		r.Get("/users/me", h.GetCurrentUser)
 		r.Put("/users/me", h.UpdateProfile)
+		r.Put("/users/me/password", h.ChangePassword)
 		r.Get("/dashboard/stats", h.GetDashboardStats)
 		r.Get("/dashboard/activity", h.GetDashboardActivity)
 
