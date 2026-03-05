@@ -44,7 +44,6 @@ func main() {
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
 
-	// CORS — configurable allowed origins
 	allowedOrigins := []string{"*"}
 	if cfg.AllowedOrigins != "" {
 		allowedOrigins = strings.Split(cfg.AllowedOrigins, ",")
@@ -71,32 +70,105 @@ func main() {
 		r.Post("/login", h.Login)
 	})
 
-	// Public API (no auth required)
+	// Public API
 	r.Get("/api/v1/explore/repos", h.ExploreRepos)
 	r.Get("/api/v1/users/{username}", h.GetUserProfile)
+	r.Get("/api/v1/users/{username}/starred", h.ListUserStarred)
 
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Use(h.AuthMiddleware)
+
+		// User
 		r.Get("/users/me", h.GetCurrentUser)
 		r.Put("/users/me", h.UpdateProfile)
 		r.Get("/dashboard/stats", h.GetDashboardStats)
+		r.Get("/dashboard/activity", h.GetDashboardActivity)
 
 		// User preferences
 		r.Get("/users/me/preferences", h.GetPreferences)
 		r.Put("/users/me/preferences", h.UpdatePreferences)
 
+		// SSH keys
+		r.Get("/users/me/keys", h.ListSSHKeys)
+		r.Post("/users/me/keys", h.CreateSSHKey)
+		r.Delete("/users/me/keys/{id}", h.DeleteSSHKey)
+
+		// Notifications
+		r.Get("/notifications", h.ListNotifications)
+		r.Get("/notifications/unread", h.UnreadNotificationCount)
+		r.Put("/notifications/{id}/read", h.MarkNotificationRead)
+		r.Put("/notifications/read-all", h.MarkAllNotificationsRead)
+
 		// Repositories
 		r.Get("/repos", h.ListRepos)
 		r.Post("/repos", h.CreateRepo)
 		r.Get("/repos/{owner}/{name}", h.GetRepo)
+		r.Put("/repos/{owner}/{name}", h.UpdateRepo)
 		r.Delete("/repos/{owner}/{name}", h.DeleteRepo)
+
+		// Stars
+		r.Put("/repos/{owner}/{name}/star", h.StarRepo)
+		r.Delete("/repos/{owner}/{name}/star", h.UnstarRepo)
+		r.Get("/repos/{owner}/{name}/star", h.IsStarred)
+		r.Get("/repos/{owner}/{name}/stargazers", h.ListStargazers)
+
+		// Forks
+		r.Post("/repos/{owner}/{name}/forks", h.ForkRepo)
+		r.Get("/repos/{owner}/{name}/forks", h.ListForks)
 
 		// Git browsing
 		r.Get("/repos/{owner}/{name}/tree/{ref}/*", h.GetTree)
 		r.Get("/repos/{owner}/{name}/blob/{ref}/*", h.GetBlob)
 		r.Get("/repos/{owner}/{name}/commits", h.GetCommits)
+		r.Get("/repos/{owner}/{name}/commits/{hash}", h.GetCommitDetail)
 		r.Get("/repos/{owner}/{name}/branches", h.GetBranches)
+		r.Get("/repos/{owner}/{name}/tags", h.GetTags)
 		r.Get("/repos/{owner}/{name}/readme", h.GetReadme)
+		r.Get("/repos/{owner}/{name}/blame/{ref}/*", h.GetBlame)
+		r.Get("/repos/{owner}/{name}/compare", h.CompareBranches)
+
+		// File editor
+		r.Post("/repos/{owner}/{name}/contents/*", h.CreateFile)
+		r.Put("/repos/{owner}/{name}/contents/*", h.UpdateFile)
+		r.Delete("/repos/{owner}/{name}/contents/*", h.DeleteFile)
+
+		// Branch management
+		r.Post("/repos/{owner}/{name}/branches", h.CreateBranch)
+		r.Delete("/repos/{owner}/{name}/branches/{branch}", h.DeleteBranch)
+
+		// Archive
+		r.Get("/repos/{owner}/{name}/archive/{ref}", h.GetArchive)
+
+		// Language stats
+		r.Get("/repos/{owner}/{name}/languages", h.GetLanguages)
+
+		// Contributors
+		r.Get("/repos/{owner}/{name}/contributors", h.GetContributors)
+
+		// Labels
+		r.Get("/repos/{owner}/{name}/labels", h.ListLabels)
+		r.Post("/repos/{owner}/{name}/labels", h.CreateLabel)
+		r.Put("/repos/{owner}/{name}/labels/{id}", h.UpdateLabel)
+		r.Delete("/repos/{owner}/{name}/labels/{id}", h.DeleteLabel)
+
+		// Milestones
+		r.Get("/repos/{owner}/{name}/milestones", h.ListMilestones)
+		r.Post("/repos/{owner}/{name}/milestones", h.CreateMilestone)
+		r.Put("/repos/{owner}/{name}/milestones/{id}", h.UpdateMilestone)
+		r.Delete("/repos/{owner}/{name}/milestones/{id}", h.DeleteMilestone)
+
+		// Releases
+		r.Get("/repos/{owner}/{name}/releases", h.ListReleases)
+		r.Post("/repos/{owner}/{name}/releases", h.CreateRelease)
+		r.Get("/repos/{owner}/{name}/releases/{id}", h.GetRelease)
+		r.Put("/repos/{owner}/{name}/releases/{id}", h.UpdateRelease)
+		r.Delete("/repos/{owner}/{name}/releases/{id}", h.DeleteRelease)
+
+		// Webhooks
+		r.Get("/repos/{owner}/{name}/hooks", h.ListWebhooks)
+		r.Post("/repos/{owner}/{name}/hooks", h.CreateWebhook)
+		r.Put("/repos/{owner}/{name}/hooks/{id}", h.UpdateWebhook)
+		r.Delete("/repos/{owner}/{name}/hooks/{id}", h.DeleteWebhook)
 
 		// Issues
 		r.Get("/repos/{owner}/{name}/issues", h.ListIssues)
@@ -107,6 +179,17 @@ func main() {
 		r.Post("/repos/{owner}/{name}/issues/{number}/comments", h.CreateIssueComment)
 		r.Put("/repos/{owner}/{name}/issues/{number}/comments/{id}", h.UpdateIssueComment)
 		r.Delete("/repos/{owner}/{name}/issues/{number}/comments/{id}", h.DeleteIssueComment)
+		r.Post("/repos/{owner}/{name}/issues/{number}/labels", h.AddIssueLabel)
+		r.Delete("/repos/{owner}/{name}/issues/{number}/labels/{labelId}", h.RemoveIssueLabel)
+
+		// Pull Requests
+		r.Get("/repos/{owner}/{name}/pulls", h.ListPullRequests)
+		r.Post("/repos/{owner}/{name}/pulls", h.CreatePullRequest)
+		r.Get("/repos/{owner}/{name}/pulls/{number}", h.GetPullRequest)
+		r.Put("/repos/{owner}/{name}/pulls/{number}", h.UpdatePullRequest)
+		r.Post("/repos/{owner}/{name}/pulls/{number}/merge", h.MergePullRequest)
+		r.Get("/repos/{owner}/{name}/pulls/{number}/comments", h.ListPRComments)
+		r.Post("/repos/{owner}/{name}/pulls/{number}/comments", h.CreatePRComment)
 
 		// Organizations
 		r.Get("/orgs", h.ListOrgs)
@@ -126,6 +209,15 @@ func main() {
 		r.Post("/shortcuts", h.CreateShortcut)
 		r.Put("/shortcuts/{id}", h.UpdateShortcut)
 		r.Delete("/shortcuts/{id}", h.DeleteShortcut)
+
+		// Admin
+		r.Route("/admin", func(r chi.Router) {
+			r.Get("/stats", h.AdminStats)
+			r.Get("/users", h.AdminListUsers)
+			r.Get("/users/{username}", h.AdminGetUser)
+			r.Put("/users/{username}", h.AdminUpdateUser)
+			r.Delete("/users/{username}", h.AdminDeleteUser)
+		})
 	})
 
 	// Git Smart HTTP protocol
@@ -149,7 +241,6 @@ func main() {
 		IdleTimeout:  120 * time.Second,
 	}
 
-	// Graceful shutdown
 	go func() {
 		<-ctx.Done()
 		log.Println("shutting down server...")

@@ -20,6 +20,8 @@ func Connect(databaseURL string) (*pgxpool.Pool, error) {
 
 func Migrate(pool *pgxpool.Pool) error {
 	ctx := context.Background()
+
+	// Core tables
 	_, err := pool.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS users (
 			id         BIGSERIAL PRIMARY KEY,
@@ -28,6 +30,9 @@ func Migrate(pool *pgxpool.Pool) error {
 			password   TEXT NOT NULL,
 			full_name  TEXT NOT NULL DEFAULT '',
 			avatar_url TEXT NOT NULL DEFAULT '',
+			bio        TEXT NOT NULL DEFAULT '',
+			location   TEXT NOT NULL DEFAULT '',
+			website    TEXT NOT NULL DEFAULT '',
 			is_admin   BOOLEAN NOT NULL DEFAULT false,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -44,24 +49,30 @@ func Migrate(pool *pgxpool.Pool) error {
 		);
 
 		CREATE TABLE IF NOT EXISTS org_members (
-			id      BIGSERIAL PRIMARY KEY,
-			org_id  BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
-			user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-			role    TEXT NOT NULL DEFAULT 'member',
+			id        BIGSERIAL PRIMARY KEY,
+			org_id    BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+			user_id   BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			role      TEXT NOT NULL DEFAULT 'member',
 			joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			UNIQUE(org_id, user_id)
 		);
 
 		CREATE TABLE IF NOT EXISTS repositories (
-			id             BIGSERIAL PRIMARY KEY,
-			owner_id       BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-			org_id         BIGINT REFERENCES organizations(id) ON DELETE CASCADE,
-			name           TEXT NOT NULL,
-			description    TEXT NOT NULL DEFAULT '',
-			is_private     BOOLEAN NOT NULL DEFAULT false,
-			default_branch TEXT NOT NULL DEFAULT 'main',
-			created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			id              BIGSERIAL PRIMARY KEY,
+			owner_id        BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			org_id          BIGINT REFERENCES organizations(id) ON DELETE CASCADE,
+			name            TEXT NOT NULL,
+			description     TEXT NOT NULL DEFAULT '',
+			website         TEXT NOT NULL DEFAULT '',
+			is_private      BOOLEAN NOT NULL DEFAULT false,
+			is_fork         BOOLEAN NOT NULL DEFAULT false,
+			forked_from_id  BIGINT REFERENCES repositories(id) ON DELETE SET NULL,
+			default_branch  TEXT NOT NULL DEFAULT 'main',
+			topics          TEXT[] NOT NULL DEFAULT '{}',
+			stars_count     INT NOT NULL DEFAULT 0,
+			forks_count     INT NOT NULL DEFAULT 0,
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			UNIQUE(owner_id, name)
 		);
 
@@ -76,16 +87,29 @@ func Migrate(pool *pgxpool.Pool) error {
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		);
 
-		CREATE TABLE IF NOT EXISTS issues (
+		CREATE TABLE IF NOT EXISTS milestones (
 			id          BIGSERIAL PRIMARY KEY,
 			repo_id     BIGINT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
-			number      INT NOT NULL,
-			author_id   BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 			title       TEXT NOT NULL,
-			body        TEXT NOT NULL DEFAULT '',
+			description TEXT NOT NULL DEFAULT '',
 			state       TEXT NOT NULL DEFAULT 'open',
+			due_date    TIMESTAMPTZ,
 			created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+
+		CREATE TABLE IF NOT EXISTS issues (
+			id           BIGSERIAL PRIMARY KEY,
+			repo_id      BIGINT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+			number       INT NOT NULL,
+			author_id    BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			title        TEXT NOT NULL,
+			body         TEXT NOT NULL DEFAULT '',
+			state        TEXT NOT NULL DEFAULT 'open',
+			milestone_id BIGINT REFERENCES milestones(id) ON DELETE SET NULL,
+			assignee_id  BIGINT REFERENCES users(id) ON DELETE SET NULL,
+			created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			UNIQUE(repo_id, number)
 		);
 
@@ -99,10 +123,11 @@ func Migrate(pool *pgxpool.Pool) error {
 		);
 
 		CREATE TABLE IF NOT EXISTS labels (
-			id      BIGSERIAL PRIMARY KEY,
-			repo_id BIGINT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
-			name    TEXT NOT NULL,
-			color   TEXT NOT NULL DEFAULT '#cccccc',
+			id          BIGSERIAL PRIMARY KEY,
+			repo_id     BIGINT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+			name        TEXT NOT NULL,
+			color       TEXT NOT NULL DEFAULT '#cccccc',
+			description TEXT NOT NULL DEFAULT '',
 			UNIQUE(repo_id, name)
 		);
 
@@ -110,6 +135,96 @@ func Migrate(pool *pgxpool.Pool) error {
 			issue_id BIGINT NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
 			label_id BIGINT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
 			PRIMARY KEY (issue_id, label_id)
+		);
+
+		CREATE TABLE IF NOT EXISTS stars (
+			user_id    BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			repo_id    BIGINT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			PRIMARY KEY (user_id, repo_id)
+		);
+
+		CREATE TABLE IF NOT EXISTS releases (
+			id            BIGSERIAL PRIMARY KEY,
+			repo_id       BIGINT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+			tag_name      TEXT NOT NULL,
+			title         TEXT NOT NULL,
+			body          TEXT NOT NULL DEFAULT '',
+			is_draft      BOOLEAN NOT NULL DEFAULT false,
+			is_prerelease BOOLEAN NOT NULL DEFAULT false,
+			author_id     BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			UNIQUE(repo_id, tag_name)
+		);
+
+		CREATE TABLE IF NOT EXISTS pull_requests (
+			id          BIGSERIAL PRIMARY KEY,
+			repo_id     BIGINT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+			number      INT NOT NULL,
+			author_id   BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			title       TEXT NOT NULL,
+			body        TEXT NOT NULL DEFAULT '',
+			state       TEXT NOT NULL DEFAULT 'open',
+			head_branch TEXT NOT NULL,
+			base_branch TEXT NOT NULL,
+			merged_at   TIMESTAMPTZ,
+			merged_by   BIGINT REFERENCES users(id),
+			created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			UNIQUE(repo_id, number)
+		);
+
+		CREATE TABLE IF NOT EXISTS pr_comments (
+			id         BIGSERIAL PRIMARY KEY,
+			pr_id      BIGINT NOT NULL REFERENCES pull_requests(id) ON DELETE CASCADE,
+			author_id  BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			body       TEXT NOT NULL,
+			path       TEXT,
+			line       INT,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+
+		CREATE TABLE IF NOT EXISTS pr_reviews (
+			id         BIGSERIAL PRIMARY KEY,
+			pr_id      BIGINT NOT NULL REFERENCES pull_requests(id) ON DELETE CASCADE,
+			author_id  BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			state      TEXT NOT NULL DEFAULT 'pending',
+			body       TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+
+		CREATE TABLE IF NOT EXISTS ssh_keys (
+			id          BIGSERIAL PRIMARY KEY,
+			user_id     BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			name        TEXT NOT NULL,
+			fingerprint TEXT NOT NULL,
+			content     TEXT NOT NULL,
+			created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+
+		CREATE TABLE IF NOT EXISTS webhooks (
+			id         BIGSERIAL PRIMARY KEY,
+			repo_id    BIGINT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+			url        TEXT NOT NULL,
+			secret     TEXT NOT NULL DEFAULT '',
+			events     TEXT[] NOT NULL DEFAULT '{push}',
+			active     BOOLEAN NOT NULL DEFAULT true,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+
+		CREATE TABLE IF NOT EXISTS notifications (
+			id         BIGSERIAL PRIMARY KEY,
+			user_id    BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			repo_id    BIGINT REFERENCES repositories(id) ON DELETE CASCADE,
+			type       TEXT NOT NULL,
+			title      TEXT NOT NULL,
+			body       TEXT NOT NULL DEFAULT '',
+			read       BOOLEAN NOT NULL DEFAULT false,
+			link       TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		);
 
 		CREATE TABLE IF NOT EXISTS user_preferences (
@@ -122,8 +237,20 @@ func Migrate(pool *pgxpool.Pool) error {
 
 		-- Migration helpers for existing databases
 		ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT false;
+		ALTER TABLE users ADD COLUMN IF NOT EXISTS bio TEXT NOT NULL DEFAULT '';
+		ALTER TABLE users ADD COLUMN IF NOT EXISTS location TEXT NOT NULL DEFAULT '';
+		ALTER TABLE users ADD COLUMN IF NOT EXISTS website TEXT NOT NULL DEFAULT '';
 		ALTER TABLE repositories ADD COLUMN IF NOT EXISTS default_branch TEXT NOT NULL DEFAULT 'main';
 		ALTER TABLE repositories ADD COLUMN IF NOT EXISTS org_id BIGINT REFERENCES organizations(id) ON DELETE CASCADE;
+		ALTER TABLE repositories ADD COLUMN IF NOT EXISTS website TEXT NOT NULL DEFAULT '';
+		ALTER TABLE repositories ADD COLUMN IF NOT EXISTS is_fork BOOLEAN NOT NULL DEFAULT false;
+		ALTER TABLE repositories ADD COLUMN IF NOT EXISTS forked_from_id BIGINT REFERENCES repositories(id) ON DELETE SET NULL;
+		ALTER TABLE repositories ADD COLUMN IF NOT EXISTS topics TEXT[] NOT NULL DEFAULT '{}';
+		ALTER TABLE repositories ADD COLUMN IF NOT EXISTS stars_count INT NOT NULL DEFAULT 0;
+		ALTER TABLE repositories ADD COLUMN IF NOT EXISTS forks_count INT NOT NULL DEFAULT 0;
+		ALTER TABLE issues ADD COLUMN IF NOT EXISTS milestone_id BIGINT REFERENCES milestones(id) ON DELETE SET NULL;
+		ALTER TABLE issues ADD COLUMN IF NOT EXISTS assignee_id BIGINT REFERENCES users(id) ON DELETE SET NULL;
+		ALTER TABLE labels ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT '';
 	`)
 	return err
 }

@@ -1,0 +1,228 @@
+package handler
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+
+	"github.com/go-chi/chi/v5"
+)
+
+type createFileRequest struct {
+	Content string `json:"content"`
+	Message string `json:"message"`
+	Branch  string `json:"branch"`
+}
+
+type updateFileRequest struct {
+	Content string `json:"content"`
+	Message string `json:"message"`
+	Branch  string `json:"branch"`
+}
+
+type deleteFileRequest struct {
+	Message string `json:"message"`
+	Branch  string `json:"branch"`
+}
+
+// commitToRepo creates a temporary clone, makes changes, commits, and pushes.
+func (h *Handler) commitToRepo(repoDir, branch, authorName, authorEmail, message string, fn func(workDir string) error) error {
+	tmpDir, err := os.MkdirTemp("", "devnook-edit-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Clone
+	cmd := exec.Command("git", "clone", "--branch", branch, "--single-branch", repoDir, tmpDir)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("clone failed: %s", string(out))
+	}
+
+	// Apply changes
+	if err := fn(tmpDir); err != nil {
+		return err
+	}
+
+	// Configure author
+	exec.Command("git", "-C", tmpDir, "config", "user.name", authorName).Run()
+	exec.Command("git", "-C", tmpDir, "config", "user.email", authorEmail).Run()
+
+	// Stage all
+	cmd = exec.Command("git", "-C", tmpDir, "add", "-A")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("stage failed: %s", string(out))
+	}
+
+	// Check if there are changes
+	cmd = exec.Command("git", "-C", tmpDir, "diff", "--cached", "--quiet")
+	if cmd.Run() == nil {
+		return fmt.Errorf("no changes to commit")
+	}
+
+	// Commit
+	cmd = exec.Command("git", "-C", tmpDir, "commit", "-m", message)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("commit failed: %s", string(out))
+	}
+
+	// Push
+	cmd = exec.Command("git", "-C", tmpDir, "push", "origin", branch)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("push failed: %s", string(out))
+	}
+
+	return nil
+}
+
+// CreateFile creates a new file via the API.
+func (h *Handler) CreateFile(w http.ResponseWriter, r *http.Request) {
+	claims := getClaims(r)
+	owner := chi.URLParam(r, "owner")
+	name := chi.URLParam(r, "name")
+	path := chi.URLParam(r, "*")
+
+	if owner != claims.Username {
+		writeError(w, http.StatusForbidden, "not your repository")
+		return
+	}
+
+	var req createFileRequest
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	branch := req.Branch
+	if branch == "" {
+		branch = "main"
+	}
+	message := req.Message
+	if message == "" {
+		message = "Create " + path
+	}
+
+	repoDir := h.repoPath(owner, name)
+
+	var authorName, authorEmail string
+	h.db.QueryRow(context.Background(),
+		`SELECT COALESCE(full_name, username), email FROM users WHERE id = $1`,
+		claims.UserID).Scan(&authorName, &authorEmail)
+
+	err := h.commitToRepo(repoDir, branch, authorName, authorEmail, message, func(workDir string) error {
+		filePath := filepath.Join(workDir, path)
+		if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
+			return fmt.Errorf("failed to create directory: %w", err)
+		}
+		if _, err := os.Stat(filePath); err == nil {
+			return fmt.Errorf("file already exists")
+		}
+		return os.WriteFile(filePath, []byte(req.Content), 0o644)
+	})
+	if err != nil {
+		if strings.Contains(err.Error(), "already exists") {
+			writeError(w, http.StatusConflict, "file already exists")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]string{"message": "file created"})
+}
+
+// UpdateFile updates an existing file via the API.
+func (h *Handler) UpdateFile(w http.ResponseWriter, r *http.Request) {
+	claims := getClaims(r)
+	owner := chi.URLParam(r, "owner")
+	name := chi.URLParam(r, "name")
+	path := chi.URLParam(r, "*")
+
+	if owner != claims.Username {
+		writeError(w, http.StatusForbidden, "not your repository")
+		return
+	}
+
+	var req updateFileRequest
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	branch := req.Branch
+	if branch == "" {
+		branch = "main"
+	}
+	message := req.Message
+	if message == "" {
+		message = "Update " + path
+	}
+
+	repoDir := h.repoPath(owner, name)
+
+	var authorName, authorEmail string
+	h.db.QueryRow(context.Background(),
+		`SELECT COALESCE(full_name, username), email FROM users WHERE id = $1`,
+		claims.UserID).Scan(&authorName, &authorEmail)
+
+	err := h.commitToRepo(repoDir, branch, authorName, authorEmail, message, func(workDir string) error {
+		filePath := filepath.Join(workDir, path)
+		return os.WriteFile(filePath, []byte(req.Content), 0o644)
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// DeleteFile deletes a file via the API.
+func (h *Handler) DeleteFile(w http.ResponseWriter, r *http.Request) {
+	claims := getClaims(r)
+	owner := chi.URLParam(r, "owner")
+	name := chi.URLParam(r, "name")
+	path := chi.URLParam(r, "*")
+
+	if owner != claims.Username {
+		writeError(w, http.StatusForbidden, "not your repository")
+		return
+	}
+
+	var req deleteFileRequest
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	branch := req.Branch
+	if branch == "" {
+		branch = "main"
+	}
+	message := req.Message
+	if message == "" {
+		message = "Delete " + path
+	}
+
+	repoDir := h.repoPath(owner, name)
+
+	var authorName, authorEmail string
+	h.db.QueryRow(context.Background(),
+		`SELECT COALESCE(full_name, username), email FROM users WHERE id = $1`,
+		claims.UserID).Scan(&authorName, &authorEmail)
+
+	err := h.commitToRepo(repoDir, branch, authorName, authorEmail, message, func(workDir string) error {
+		filePath := filepath.Join(workDir, path)
+		return os.Remove(filePath)
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}

@@ -37,8 +37,10 @@ func (h *Handler) ExploreRepos(w http.ResponseWriter, r *http.Request) {
 		orderBy = "r.name ASC"
 	case "created":
 		orderBy = "r.created_at DESC"
-	case "updated":
-		orderBy = "r.updated_at DESC"
+	case "stars":
+		orderBy = "r.stars_count DESC"
+	case "forks":
+		orderBy = "r.forks_count DESC"
 	}
 
 	ctx := context.Background()
@@ -52,20 +54,20 @@ func (h *Handler) ExploreRepos(w http.ResponseWriter, r *http.Request) {
 		h.db.QueryRow(ctx, `SELECT COUNT(*) FROM repositories r WHERE r.is_private = false`).Scan(&totalCount)
 	}
 
-	var query string
-	var args []interface{}
-	baseSelect := `SELECT r.id, r.owner_id, COALESCE(o.name, u.username) as owner, r.name, r.description, r.is_private, r.default_branch, r.org_id, r.created_at, r.updated_at
+	baseSelect := `SELECT ` + repoSelectColumns + `
 		FROM repositories r
 		JOIN users u ON r.owner_id = u.id
 		LEFT JOIN organizations o ON o.id = r.org_id
 		WHERE r.is_private = false`
 
+	var query string
+	var args []any
 	if q != "" {
 		query = baseSelect + ` AND (r.name ILIKE '%' || $1 || '%' OR r.description ILIKE '%' || $1 || '%') ORDER BY ` + orderBy + ` LIMIT $2 OFFSET $3`
-		args = []interface{}{q, perPage, offset}
+		args = []any{q, perPage, offset}
 	} else {
 		query = baseSelect + ` ORDER BY ` + orderBy + ` LIMIT $1 OFFSET $2`
-		args = []interface{}{perPage, offset}
+		args = []any{perPage, offset}
 	}
 
 	rows, err := h.db.Query(ctx, query, args...)
@@ -77,9 +79,8 @@ func (h *Handler) ExploreRepos(w http.ResponseWriter, r *http.Request) {
 
 	var repos []domain.Repository
 	for rows.Next() {
-		var repo domain.Repository
-		if err := rows.Scan(&repo.ID, &repo.OwnerID, &repo.Owner, &repo.Name, &repo.Description,
-			&repo.IsPrivate, &repo.DefaultBranch, &repo.OrgID, &repo.CreatedAt, &repo.UpdatedAt); err != nil {
+		repo, err := h.scanRepo(rows)
+		if err != nil {
 			continue
 		}
 		repos = append(repos, repo)
