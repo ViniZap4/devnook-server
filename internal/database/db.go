@@ -235,6 +235,15 @@ func Migrate(pool *pgxpool.Pool) error {
 			settings JSONB NOT NULL DEFAULT '{}'
 		);
 
+		CREATE TABLE IF NOT EXISTS repo_collaborators (
+			id         BIGSERIAL PRIMARY KEY,
+			repo_id    BIGINT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+			user_id    BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			permission TEXT NOT NULL DEFAULT 'write',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			UNIQUE(repo_id, user_id)
+		);
+
 		-- Migration helpers for existing databases
 		ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT false;
 		ALTER TABLE users ADD COLUMN IF NOT EXISTS bio TEXT NOT NULL DEFAULT '';
