@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"strings"
 
@@ -52,17 +53,19 @@ func getClaims(r *http.Request) *auth.Claims {
 	return r.Context().Value(userClaimsKey).(*auth.Claims)
 }
 
-func writeJSON(w http.ResponseWriter, status int, data interface{}) {
+func writeJSON(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(data)
+	if err := json.NewEncoder(w).Encode(data); err != nil {
+		log.Printf("writeJSON encode error: %v", err)
+	}
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
-func readJSON(r *http.Request, v interface{}) error {
+func readJSON(r *http.Request, v any) error {
 	defer r.Body.Close()
 	return json.NewDecoder(r.Body).Decode(v)
 }

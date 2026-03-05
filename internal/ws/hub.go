@@ -1,6 +1,7 @@
 package ws
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"sync"
@@ -34,9 +35,17 @@ func NewHub() *Hub {
 	}
 }
 
-func (h *Hub) Run() {
+func (h *Hub) Run(ctx context.Context) {
 	for {
 		select {
+		case <-ctx.Done():
+			h.mu.Lock()
+			for client := range h.clients {
+				close(client.send)
+				delete(h.clients, client)
+			}
+			h.mu.Unlock()
+			return
 		case client := <-h.register:
 			h.mu.Lock()
 			h.clients[client] = true

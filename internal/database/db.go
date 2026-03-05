@@ -112,6 +112,14 @@ func Migrate(pool *pgxpool.Pool) error {
 			PRIMARY KEY (issue_id, label_id)
 		);
 
+		CREATE TABLE IF NOT EXISTS user_preferences (
+			user_id  BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+			theme    TEXT NOT NULL DEFAULT 'default-dark',
+			mode     TEXT NOT NULL DEFAULT 'dark',
+			locale   TEXT NOT NULL DEFAULT 'en',
+			settings JSONB NOT NULL DEFAULT '{}'
+		);
+
 		-- Migration helpers for existing databases
 		ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT false;
 		ALTER TABLE repositories ADD COLUMN IF NOT EXISTS default_branch TEXT NOT NULL DEFAULT 'main';

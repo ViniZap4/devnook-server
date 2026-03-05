@@ -1,8 +1,14 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
 
 	"github.com/ViniZap4/devnook-server/internal/config"
 	"github.com/ViniZap4/devnook-server/internal/database"
@@ -26,15 +32,28 @@ func main() {
 		log.Fatalf("database migration failed: %v", err)
 	}
 
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
 	hub := ws.NewHub()
-	go hub.Run()
+	go hub.Run(ctx)
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.RequestID)
+	r.Use(middleware.RealIP)
+
+	// CORS — configurable allowed origins
+	allowedOrigins := []string{"*"}
+	if cfg.AllowedOrigins != "" {
+		allowedOrigins = strings.Split(cfg.AllowedOrigins, ",")
+		for i, o := range allowedOrigins {
+			allowedOrigins[i] = strings.TrimSpace(o)
+		}
+	}
 	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   []string{"*"},
+		AllowedOrigins:   allowedOrigins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
 		AllowCredentials: true,
@@ -61,6 +80,10 @@ func main() {
 		r.Get("/users/me", h.GetCurrentUser)
 		r.Put("/users/me", h.UpdateProfile)
 		r.Get("/dashboard/stats", h.GetDashboardStats)
+
+		// User preferences
+		r.Get("/users/me/preferences", h.GetPreferences)
+		r.Put("/users/me/preferences", h.UpdatePreferences)
 
 		// Repositories
 		r.Get("/repos", h.ListRepos)
@@ -117,8 +140,28 @@ func main() {
 	if port == "" {
 		port = "8080"
 	}
+
+	srv := &http.Server{
+		Addr:         ":" + port,
+		Handler:      r,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 60 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
+
+	// Graceful shutdown
+	go func() {
+		<-ctx.Done()
+		log.Println("shutting down server...")
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer shutdownCancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			log.Printf("server shutdown error: %v", err)
+		}
+	}()
+
 	log.Printf("devnook-server listening on :%s", port)
-	if err := http.ListenAndServe(":"+port, r); err != nil {
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
 }
