@@ -52,15 +52,53 @@ func main() {
 		r.Post("/login", h.Login)
 	})
 
+	// Public API (no auth required)
+	r.Get("/api/v1/explore/repos", h.ExploreRepos)
+	r.Get("/api/v1/users/{username}", h.GetUserProfile)
+
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Use(h.AuthMiddleware)
 		r.Get("/users/me", h.GetCurrentUser)
+		r.Put("/users/me", h.UpdateProfile)
+		r.Get("/dashboard/stats", h.GetDashboardStats)
 
+		// Repositories
 		r.Get("/repos", h.ListRepos)
 		r.Post("/repos", h.CreateRepo)
 		r.Get("/repos/{owner}/{name}", h.GetRepo)
 		r.Delete("/repos/{owner}/{name}", h.DeleteRepo)
 
+		// Git browsing
+		r.Get("/repos/{owner}/{name}/tree/{ref}/*", h.GetTree)
+		r.Get("/repos/{owner}/{name}/blob/{ref}/*", h.GetBlob)
+		r.Get("/repos/{owner}/{name}/commits", h.GetCommits)
+		r.Get("/repos/{owner}/{name}/branches", h.GetBranches)
+		r.Get("/repos/{owner}/{name}/readme", h.GetReadme)
+
+		// Issues
+		r.Get("/repos/{owner}/{name}/issues", h.ListIssues)
+		r.Post("/repos/{owner}/{name}/issues", h.CreateIssue)
+		r.Get("/repos/{owner}/{name}/issues/{number}", h.GetIssue)
+		r.Put("/repos/{owner}/{name}/issues/{number}", h.UpdateIssue)
+		r.Get("/repos/{owner}/{name}/issues/{number}/comments", h.ListIssueComments)
+		r.Post("/repos/{owner}/{name}/issues/{number}/comments", h.CreateIssueComment)
+		r.Put("/repos/{owner}/{name}/issues/{number}/comments/{id}", h.UpdateIssueComment)
+		r.Delete("/repos/{owner}/{name}/issues/{number}/comments/{id}", h.DeleteIssueComment)
+
+		// Organizations
+		r.Get("/orgs", h.ListOrgs)
+		r.Post("/orgs", h.CreateOrg)
+		r.Get("/orgs/{name}", h.GetOrg)
+		r.Put("/orgs/{name}", h.UpdateOrg)
+		r.Delete("/orgs/{name}", h.DeleteOrg)
+		r.Get("/orgs/{name}/members", h.ListOrgMembers)
+		r.Post("/orgs/{name}/members", h.AddOrgMember)
+		r.Put("/orgs/{name}/members/{username}", h.UpdateOrgMember)
+		r.Delete("/orgs/{name}/members/{username}", h.RemoveOrgMember)
+		r.Get("/orgs/{name}/repos", h.ListOrgRepos)
+		r.Post("/orgs/{name}/repos", h.CreateOrgRepo)
+
+		// Shortcuts
 		r.Get("/shortcuts", h.ListShortcuts)
 		r.Post("/shortcuts", h.CreateShortcut)
 		r.Put("/shortcuts/{id}", h.UpdateShortcut)

@@ -14,10 +14,15 @@ import (
 
 func (h *Handler) ListRepos(w http.ResponseWriter, r *http.Request) {
 	claims := getClaims(r)
+	// Include user-owned repos AND repos from orgs the user belongs to
 	rows, err := h.db.Query(context.Background(),
-		`SELECT r.id, r.owner_id, u.username, r.name, r.description, r.is_private, r.created_at, r.updated_at
-		 FROM repositories r JOIN users u ON r.owner_id = u.id
-		 WHERE r.owner_id = $1 ORDER BY r.updated_at DESC`, claims.UserID)
+		`SELECT r.id, r.owner_id, COALESCE(o.name, u.username) as owner, r.name, r.description, r.is_private, r.default_branch, r.org_id, r.created_at, r.updated_at
+		 FROM repositories r
+		 JOIN users u ON r.owner_id = u.id
+		 LEFT JOIN organizations o ON o.id = r.org_id
+		 WHERE r.owner_id = $1
+		    OR r.org_id IN (SELECT org_id FROM org_members WHERE user_id = $1)
+		 ORDER BY r.updated_at DESC`, claims.UserID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list repos")
 		return
@@ -27,7 +32,8 @@ func (h *Handler) ListRepos(w http.ResponseWriter, r *http.Request) {
 	var repos []domain.Repository
 	for rows.Next() {
 		var repo domain.Repository
-		if err := rows.Scan(&repo.ID, &repo.OwnerID, &repo.Owner, &repo.Name, &repo.Description, &repo.IsPrivate, &repo.CreatedAt, &repo.UpdatedAt); err != nil {
+		if err := rows.Scan(&repo.ID, &repo.OwnerID, &repo.Owner, &repo.Name, &repo.Description,
+			&repo.IsPrivate, &repo.DefaultBranch, &repo.OrgID, &repo.CreatedAt, &repo.UpdatedAt); err != nil {
 			continue
 		}
 		repos = append(repos, repo)
@@ -91,14 +97,26 @@ func (h *Handler) GetRepo(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 
 	var repo domain.Repository
+	// Try user-owned first
 	err := h.db.QueryRow(context.Background(),
-		`SELECT r.id, r.owner_id, u.username, r.name, r.description, r.is_private, r.created_at, r.updated_at
+		`SELECT r.id, r.owner_id, u.username, r.name, r.description, r.is_private, r.default_branch, r.org_id, r.created_at, r.updated_at
 		 FROM repositories r JOIN users u ON r.owner_id = u.id
-		 WHERE u.username = $1 AND r.name = $2`, owner, name,
-	).Scan(&repo.ID, &repo.OwnerID, &repo.Owner, &repo.Name, &repo.Description, &repo.IsPrivate, &repo.CreatedAt, &repo.UpdatedAt)
+		 WHERE u.username = $1 AND r.name = $2 AND r.org_id IS NULL`, owner, name,
+	).Scan(&repo.ID, &repo.OwnerID, &repo.Owner, &repo.Name, &repo.Description,
+		&repo.IsPrivate, &repo.DefaultBranch, &repo.OrgID, &repo.CreatedAt, &repo.UpdatedAt)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "repository not found")
-		return
+		// Try org-owned
+		err = h.db.QueryRow(context.Background(),
+			`SELECT r.id, r.owner_id, o.name, r.name, r.description, r.is_private, r.default_branch, r.org_id, r.created_at, r.updated_at
+			 FROM repositories r
+			 JOIN organizations o ON o.id = r.org_id
+			 WHERE o.name = $1 AND r.name = $2`, owner, name,
+		).Scan(&repo.ID, &repo.OwnerID, &repo.Owner, &repo.Name, &repo.Description,
+			&repo.IsPrivate, &repo.DefaultBranch, &repo.OrgID, &repo.CreatedAt, &repo.UpdatedAt)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "repository not found")
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, repo)
 }

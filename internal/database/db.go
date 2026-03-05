@@ -33,20 +33,35 @@ func Migrate(pool *pgxpool.Pool) error {
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		);
 
-		-- Add is_admin column to existing tables that lack it
-		ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT false;
+		CREATE TABLE IF NOT EXISTS organizations (
+			id           BIGSERIAL PRIMARY KEY,
+			name         TEXT UNIQUE NOT NULL,
+			display_name TEXT NOT NULL DEFAULT '',
+			description  TEXT NOT NULL DEFAULT '',
+			avatar_url   TEXT NOT NULL DEFAULT '',
+			created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
 
-		-- Backfill: make first user admin if none exist yet
-		UPDATE users SET is_admin = true WHERE id = (SELECT MIN(id) FROM users) AND NOT EXISTS (SELECT 1 FROM users WHERE is_admin = true);
+		CREATE TABLE IF NOT EXISTS org_members (
+			id      BIGSERIAL PRIMARY KEY,
+			org_id  BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+			user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			role    TEXT NOT NULL DEFAULT 'member',
+			joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			UNIQUE(org_id, user_id)
+		);
 
 		CREATE TABLE IF NOT EXISTS repositories (
-			id          BIGSERIAL PRIMARY KEY,
-			owner_id    BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-			name        TEXT NOT NULL,
-			description TEXT NOT NULL DEFAULT '',
-			is_private  BOOLEAN NOT NULL DEFAULT false,
-			created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			id             BIGSERIAL PRIMARY KEY,
+			owner_id       BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			org_id         BIGINT REFERENCES organizations(id) ON DELETE CASCADE,
+			name           TEXT NOT NULL,
+			description    TEXT NOT NULL DEFAULT '',
+			is_private     BOOLEAN NOT NULL DEFAULT false,
+			default_branch TEXT NOT NULL DEFAULT 'main',
+			created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			UNIQUE(owner_id, name)
 		);
 
@@ -60,6 +75,47 @@ func Migrate(pool *pgxpool.Pool) error {
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		);
+
+		CREATE TABLE IF NOT EXISTS issues (
+			id          BIGSERIAL PRIMARY KEY,
+			repo_id     BIGINT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+			number      INT NOT NULL,
+			author_id   BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			title       TEXT NOT NULL,
+			body        TEXT NOT NULL DEFAULT '',
+			state       TEXT NOT NULL DEFAULT 'open',
+			created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			UNIQUE(repo_id, number)
+		);
+
+		CREATE TABLE IF NOT EXISTS issue_comments (
+			id         BIGSERIAL PRIMARY KEY,
+			issue_id   BIGINT NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+			author_id  BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			body       TEXT NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+
+		CREATE TABLE IF NOT EXISTS labels (
+			id      BIGSERIAL PRIMARY KEY,
+			repo_id BIGINT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+			name    TEXT NOT NULL,
+			color   TEXT NOT NULL DEFAULT '#cccccc',
+			UNIQUE(repo_id, name)
+		);
+
+		CREATE TABLE IF NOT EXISTS issue_labels (
+			issue_id BIGINT NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+			label_id BIGINT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+			PRIMARY KEY (issue_id, label_id)
+		);
+
+		-- Migration helpers for existing databases
+		ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT false;
+		ALTER TABLE repositories ADD COLUMN IF NOT EXISTS default_branch TEXT NOT NULL DEFAULT 'main';
+		ALTER TABLE repositories ADD COLUMN IF NOT EXISTS org_id BIGINT REFERENCES organizations(id) ON DELETE CASCADE;
 	`)
 	return err
 }
