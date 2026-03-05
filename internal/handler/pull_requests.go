@@ -359,3 +359,102 @@ func (h *Handler) CreatePRComment(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"id": commentID})
 }
+
+// PR Reviews
+
+func (h *Handler) ListPRReviews(w http.ResponseWriter, r *http.Request) {
+	owner := chi.URLParam(r, "owner")
+	name := chi.URLParam(r, "name")
+	number, err := strconv.Atoi(chi.URLParam(r, "number"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid PR number")
+		return
+	}
+
+	repoID, err := h.getRepoID(owner, name)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "repository not found")
+		return
+	}
+
+	rows, err := h.db.Query(context.Background(),
+		`SELECT rv.id, rv.pr_id, rv.author_id, u.username, rv.state, rv.body, rv.created_at
+		 FROM pr_reviews rv
+		 JOIN users u ON u.id = rv.author_id
+		 JOIN pull_requests p ON p.id = rv.pr_id
+		 WHERE p.repo_id = $1 AND p.number = $2
+		 ORDER BY rv.created_at`, repoID, number)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list reviews")
+		return
+	}
+	defer rows.Close()
+
+	var reviews []domain.PRReview
+	for rows.Next() {
+		var rv domain.PRReview
+		if err := rows.Scan(&rv.ID, &rv.PRID, &rv.AuthorID, &rv.Author,
+			&rv.State, &rv.Body, &rv.CreatedAt); err != nil {
+			continue
+		}
+		reviews = append(reviews, rv)
+	}
+	if reviews == nil {
+		reviews = []domain.PRReview{}
+	}
+	writeJSON(w, http.StatusOK, reviews)
+}
+
+func (h *Handler) CreatePRReview(w http.ResponseWriter, r *http.Request) {
+	claims := getClaims(r)
+	owner := chi.URLParam(r, "owner")
+	name := chi.URLParam(r, "name")
+	number, err := strconv.Atoi(chi.URLParam(r, "number"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid PR number")
+		return
+	}
+
+	repoID, err := h.getRepoID(owner, name)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "repository not found")
+		return
+	}
+
+	var req struct {
+		State string `json:"state"` // approved, changes_requested, comment
+		Body  string `json:"body"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.State == "" {
+		req.State = "comment"
+	}
+	if req.State != "approved" && req.State != "changes_requested" && req.State != "comment" {
+		writeError(w, http.StatusBadRequest, "state must be approved, changes_requested, or comment")
+		return
+	}
+
+	var prID int64
+	err = h.db.QueryRow(context.Background(),
+		`SELECT id FROM pull_requests WHERE repo_id = $1 AND number = $2`, repoID, number,
+	).Scan(&prID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "pull request not found")
+		return
+	}
+
+	var reviewID int64
+	err = h.db.QueryRow(context.Background(),
+		`INSERT INTO pr_reviews (pr_id, author_id, state, body)
+		 VALUES ($1, $2, $3, $4) RETURNING id`,
+		prID, claims.UserID, req.State, req.Body,
+	).Scan(&reviewID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create review")
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"id": reviewID})
+}

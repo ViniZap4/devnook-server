@@ -197,6 +197,8 @@ func main() {
 		r.Post("/repos/{owner}/{name}/pulls/{number}/merge", h.MergePullRequest)
 		r.Get("/repos/{owner}/{name}/pulls/{number}/comments", h.ListPRComments)
 		r.Post("/repos/{owner}/{name}/pulls/{number}/comments", h.CreatePRComment)
+		r.Get("/repos/{owner}/{name}/pulls/{number}/reviews", h.ListPRReviews)
+		r.Post("/repos/{owner}/{name}/pulls/{number}/reviews", h.CreatePRReview)
 
 		// Organizations
 		r.Get("/orgs", h.ListOrgs)
