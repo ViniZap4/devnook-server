@@ -164,6 +164,12 @@ func main() {
 		r.Put("/repos/{owner}/{name}/releases/{id}", h.UpdateRelease)
 		r.Delete("/repos/{owner}/{name}/releases/{id}", h.DeleteRelease)
 
+		// Collaborators
+		r.Get("/repos/{owner}/{name}/collaborators", h.ListCollaborators)
+		r.Post("/repos/{owner}/{name}/collaborators", h.AddCollaborator)
+		r.Delete("/repos/{owner}/{name}/collaborators/{username}", h.RemoveCollaborator)
+		r.Post("/repos/{owner}/{name}/transfer", h.TransferRepo)
+
 		// Webhooks
 		r.Get("/repos/{owner}/{name}/hooks", h.ListWebhooks)
 		r.Post("/repos/{owner}/{name}/hooks", h.CreateWebhook)
