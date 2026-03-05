@@ -2,22 +2,29 @@ package handler
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/ViniZap4/devnook-server/internal/domain"
 	"github.com/go-chi/chi/v5"
 )
 
 type createIssueRequest struct {
-	Title string `json:"title"`
-	Body  string `json:"body"`
+	Title       string  `json:"title"`
+	Body        string  `json:"body"`
+	MilestoneID *int64  `json:"milestone_id,omitempty"`
+	AssigneeID  *int64  `json:"assignee_id,omitempty"`
+	LabelIDs    []int64 `json:"label_ids,omitempty"`
 }
 
 type updateIssueRequest struct {
-	Title *string `json:"title,omitempty"`
-	Body  *string `json:"body,omitempty"`
-	State *string `json:"state,omitempty"`
+	Title       *string `json:"title,omitempty"`
+	Body        *string `json:"body,omitempty"`
+	State       *string `json:"state,omitempty"`
+	MilestoneID *int64  `json:"milestone_id,omitempty"`
+	AssigneeID  *int64  `json:"assignee_id,omitempty"`
 }
 
 type commentRequest struct {
@@ -45,6 +52,43 @@ func (h *Handler) getRepoID(owner, name string) (int64, error) {
 	return repoID, err
 }
 
+// loadIssueLabels fetches labels for a list of issues.
+func (h *Handler) loadIssueLabels(issueIDs []int64) (map[int64][]domain.Label, error) {
+	result := make(map[int64][]domain.Label)
+	if len(issueIDs) == 0 {
+		return result, nil
+	}
+
+	placeholders := make([]string, len(issueIDs))
+	args := make([]interface{}, len(issueIDs))
+	for i, id := range issueIDs {
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+		args[i] = id
+	}
+
+	query := fmt.Sprintf(
+		`SELECT il.issue_id, l.id, l.repo_id, l.name, l.color, l.description
+		 FROM issue_labels il JOIN labels l ON l.id = il.label_id
+		 WHERE il.issue_id IN (%s) ORDER BY l.name`,
+		strings.Join(placeholders, ","))
+
+	rows, err := h.db.Query(context.Background(), query, args...)
+	if err != nil {
+		return result, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var issueID int64
+		var l domain.Label
+		if err := rows.Scan(&issueID, &l.ID, &l.RepoID, &l.Name, &l.Color, &l.Description); err != nil {
+			continue
+		}
+		result[issueID] = append(result[issueID], l)
+	}
+	return result, nil
+}
+
 func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 	owner := chi.URLParam(r, "owner")
 	name := chi.URLParam(r, "name")
@@ -59,20 +103,67 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 	if state == "" {
 		state = "open"
 	}
+	labelFilter := r.URL.Query().Get("labels")
+	milestoneFilter := r.URL.Query().Get("milestone")
+	assigneeFilter := r.URL.Query().Get("assignee")
+	q := r.URL.Query().Get("q")
 
-	var query string
-	var args []interface{}
-	if state == "all" {
-		query = `SELECT i.id, i.repo_id, i.number, i.author_id, u.username, i.title, i.body, i.state, i.created_at, i.updated_at
-			 FROM issues i JOIN users u ON u.id = i.author_id
-			 WHERE i.repo_id = $1 ORDER BY i.created_at DESC`
-		args = []interface{}{repoID}
-	} else {
-		query = `SELECT i.id, i.repo_id, i.number, i.author_id, u.username, i.title, i.body, i.state, i.created_at, i.updated_at
-			 FROM issues i JOIN users u ON u.id = i.author_id
-			 WHERE i.repo_id = $1 AND i.state = $2 ORDER BY i.created_at DESC`
-		args = []interface{}{repoID, state}
+	// Build dynamic query
+	conditions := []string{"i.repo_id = $1"}
+	args := []interface{}{repoID}
+	argIdx := 2
+
+	if state != "all" {
+		conditions = append(conditions, fmt.Sprintf("i.state = $%d", argIdx))
+		args = append(args, state)
+		argIdx++
 	}
+
+	if milestoneFilter != "" {
+		mid, err := strconv.ParseInt(milestoneFilter, 10, 64)
+		if err == nil {
+			conditions = append(conditions, fmt.Sprintf("i.milestone_id = $%d", argIdx))
+			args = append(args, mid)
+			argIdx++
+		}
+	}
+
+	if assigneeFilter != "" {
+		conditions = append(conditions, fmt.Sprintf("au.username = $%d", argIdx))
+		args = append(args, assigneeFilter)
+		argIdx++
+	}
+
+	if labelFilter != "" {
+		labelNames := strings.Split(labelFilter, ",")
+		for _, ln := range labelNames {
+			ln = strings.TrimSpace(ln)
+			if ln == "" {
+				continue
+			}
+			conditions = append(conditions, fmt.Sprintf(
+				`EXISTS (SELECT 1 FROM issue_labels il2 JOIN labels l2 ON l2.id = il2.label_id
+				 WHERE il2.issue_id = i.id AND l2.name = $%d)`, argIdx))
+			args = append(args, ln)
+			argIdx++
+		}
+	}
+
+	if q != "" {
+		conditions = append(conditions, fmt.Sprintf("(i.title ILIKE $%d OR i.body ILIKE $%d)", argIdx, argIdx))
+		args = append(args, "%"+q+"%")
+		argIdx++
+	}
+
+	query := fmt.Sprintf(
+		`SELECT i.id, i.repo_id, i.number, i.author_id, u.username, i.title, i.body, i.state,
+		        i.milestone_id, i.assignee_id, au.username, i.created_at, i.updated_at
+		 FROM issues i
+		 JOIN users u ON u.id = i.author_id
+		 LEFT JOIN users au ON au.id = i.assignee_id
+		 WHERE %s
+		 ORDER BY i.created_at DESC`,
+		strings.Join(conditions, " AND "))
 
 	rows, err := h.db.Query(context.Background(), query, args...)
 	if err != nil {
@@ -82,14 +173,30 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	var issues []domain.Issue
+	var issueIDs []int64
 	for rows.Next() {
 		var issue domain.Issue
 		if err := rows.Scan(&issue.ID, &issue.RepoID, &issue.Number, &issue.AuthorID, &issue.Author,
-			&issue.Title, &issue.Body, &issue.State, &issue.CreatedAt, &issue.UpdatedAt); err != nil {
+			&issue.Title, &issue.Body, &issue.State,
+			&issue.MilestoneID, &issue.AssigneeID, &issue.Assignee,
+			&issue.CreatedAt, &issue.UpdatedAt); err != nil {
 			continue
 		}
 		issues = append(issues, issue)
+		issueIDs = append(issueIDs, issue.ID)
 	}
+
+	// Load labels for all issues
+	labelsMap, _ := h.loadIssueLabels(issueIDs)
+	for i := range issues {
+		if lbls, ok := labelsMap[issues[i].ID]; ok {
+			issues[i].Labels = lbls
+		}
+		if issues[i].Labels == nil {
+			issues[i].Labels = []domain.Label{}
+		}
+	}
+
 	if issues == nil {
 		issues = []domain.Issue{}
 	}
@@ -136,13 +243,20 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 
 	var issueID int64
 	err = tx.QueryRow(ctx,
-		`INSERT INTO issues (repo_id, number, author_id, title, body)
-		 VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-		repoID, number, claims.UserID, req.Title, req.Body,
+		`INSERT INTO issues (repo_id, number, author_id, title, body, milestone_id, assignee_id)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+		repoID, number, claims.UserID, req.Title, req.Body, req.MilestoneID, req.AssigneeID,
 	).Scan(&issueID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create issue")
 		return
+	}
+
+	// Attach labels
+	for _, labelID := range req.LabelIDs {
+		tx.Exec(ctx,
+			`INSERT INTO issue_labels (issue_id, label_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+			issueID, labelID)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -170,15 +284,30 @@ func (h *Handler) GetIssue(w http.ResponseWriter, r *http.Request) {
 
 	var issue domain.Issue
 	err = h.db.QueryRow(context.Background(),
-		`SELECT i.id, i.repo_id, i.number, i.author_id, u.username, i.title, i.body, i.state, i.created_at, i.updated_at
-		 FROM issues i JOIN users u ON u.id = i.author_id
+		`SELECT i.id, i.repo_id, i.number, i.author_id, u.username, i.title, i.body, i.state,
+		        i.milestone_id, i.assignee_id, au.username, i.created_at, i.updated_at
+		 FROM issues i
+		 JOIN users u ON u.id = i.author_id
+		 LEFT JOIN users au ON au.id = i.assignee_id
 		 WHERE i.repo_id = $1 AND i.number = $2`, repoID, number,
 	).Scan(&issue.ID, &issue.RepoID, &issue.Number, &issue.AuthorID, &issue.Author,
-		&issue.Title, &issue.Body, &issue.State, &issue.CreatedAt, &issue.UpdatedAt)
+		&issue.Title, &issue.Body, &issue.State,
+		&issue.MilestoneID, &issue.AssigneeID, &issue.Assignee,
+		&issue.CreatedAt, &issue.UpdatedAt)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "issue not found")
 		return
 	}
+
+	// Load labels
+	labelsMap, _ := h.loadIssueLabels([]int64{issue.ID})
+	if lbls, ok := labelsMap[issue.ID]; ok {
+		issue.Labels = lbls
+	}
+	if issue.Labels == nil {
+		issue.Labels = []domain.Label{}
+	}
+
 	writeJSON(w, http.StatusOK, issue)
 }
 
@@ -216,6 +345,24 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	if req.State != nil {
 		h.db.Exec(ctx, `UPDATE issues SET state=$1, updated_at=NOW() WHERE repo_id=$2 AND number=$3`,
 			*req.State, repoID, number)
+	}
+	if req.MilestoneID != nil {
+		if *req.MilestoneID == 0 {
+			h.db.Exec(ctx, `UPDATE issues SET milestone_id=NULL, updated_at=NOW() WHERE repo_id=$1 AND number=$2`,
+				repoID, number)
+		} else {
+			h.db.Exec(ctx, `UPDATE issues SET milestone_id=$1, updated_at=NOW() WHERE repo_id=$2 AND number=$3`,
+				*req.MilestoneID, repoID, number)
+		}
+	}
+	if req.AssigneeID != nil {
+		if *req.AssigneeID == 0 {
+			h.db.Exec(ctx, `UPDATE issues SET assignee_id=NULL, updated_at=NOW() WHERE repo_id=$1 AND number=$2`,
+				repoID, number)
+		} else {
+			h.db.Exec(ctx, `UPDATE issues SET assignee_id=$1, updated_at=NOW() WHERE repo_id=$2 AND number=$3`,
+				*req.AssigneeID, repoID, number)
+		}
 	}
 
 	w.WriteHeader(http.StatusNoContent)
