@@ -9,8 +9,9 @@ import (
 )
 
 type userProfileResponse struct {
-	User  domain.User         `json:"user"`
-	Repos []domain.Repository `json:"repos"`
+	User  domain.User              `json:"user"`
+	Repos []domain.Repository      `json:"repos"`
+	Orgs  []domain.Organization    `json:"orgs"`
 }
 
 type updateProfileRequest struct {
@@ -66,7 +67,31 @@ func (h *Handler) GetUserProfile(w http.ResponseWriter, r *http.Request) {
 		repos = []domain.Repository{}
 	}
 
-	writeJSON(w, http.StatusOK, userProfileResponse{User: user, Repos: repos})
+	// Fetch user's organizations
+	orgRows, err := h.db.Query(context.Background(),
+		`SELECT o.id, o.name, o.display_name, o.description, o.avatar_url, o.created_at, o.updated_at
+		 FROM organizations o
+		 JOIN org_members om ON om.org_id = o.id
+		 JOIN users u ON u.id = om.user_id
+		 WHERE u.username = $1
+		 ORDER BY o.name`, username)
+	var orgs []domain.Organization
+	if err == nil {
+		defer orgRows.Close()
+		for orgRows.Next() {
+			var org domain.Organization
+			if err := orgRows.Scan(&org.ID, &org.Name, &org.DisplayName, &org.Description,
+				&org.AvatarURL, &org.CreatedAt, &org.UpdatedAt); err != nil {
+				continue
+			}
+			orgs = append(orgs, org)
+		}
+	}
+	if orgs == nil {
+		orgs = []domain.Organization{}
+	}
+
+	writeJSON(w, http.StatusOK, userProfileResponse{User: user, Repos: repos, Orgs: orgs})
 }
 
 func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
