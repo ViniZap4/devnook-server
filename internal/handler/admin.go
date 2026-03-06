@@ -2,8 +2,10 @@ package handler
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/ViniZap4/devnook-server/internal/domain"
 	"github.com/go-chi/chi/v5"
@@ -126,14 +128,39 @@ func (h *Handler) AdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := context.Background()
+	sets := []string{}
+	args := []any{}
+	argN := 1
+
 	if req.IsAdmin != nil {
-		h.db.Exec(ctx, `UPDATE users SET is_admin=$1, updated_at=NOW() WHERE username=$2`, *req.IsAdmin, username)
+		sets = append(sets, fmt.Sprintf("is_admin=$%d", argN))
+		args = append(args, *req.IsAdmin)
+		argN++
 	}
 	if req.FullName != nil {
-		h.db.Exec(ctx, `UPDATE users SET full_name=$1, updated_at=NOW() WHERE username=$2`, *req.FullName, username)
+		sets = append(sets, fmt.Sprintf("full_name=$%d", argN))
+		args = append(args, *req.FullName)
+		argN++
 	}
 	if req.Email != nil {
-		h.db.Exec(ctx, `UPDATE users SET email=$1, updated_at=NOW() WHERE username=$2`, *req.Email, username)
+		sets = append(sets, fmt.Sprintf("email=$%d", argN))
+		args = append(args, *req.Email)
+		argN++
+	}
+
+	if len(sets) == 0 {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	sets = append(sets, "updated_at=NOW()")
+	query := fmt.Sprintf("UPDATE users SET %s WHERE username=$%d",
+		strings.Join(sets, ", "), argN)
+	args = append(args, username)
+
+	if _, err := h.db.Exec(ctx, query, args...); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update user")
+		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

@@ -188,9 +188,12 @@ func (h *Handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.db.Exec(context.Background(),
+	if _, err = h.db.Exec(context.Background(),
 		`UPDATE users SET password = $1, updated_at = NOW() WHERE id = $2`,
-		string(newHash), claims.UserID)
+		string(newHash), claims.UserID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update password")
+		return
+	}
 
 	w.WriteHeader(http.StatusNoContent)
 }

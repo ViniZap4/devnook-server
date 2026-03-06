@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"os/exec"
 	"path/filepath"
 
@@ -156,25 +157,51 @@ func (h *Handler) UpdateRepo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := context.Background()
+
+	// Build dynamic SET clause
+	sets := []string{}
+	args := []any{}
+	argN := 1
+
 	if req.Description != nil {
-		h.db.Exec(ctx, `UPDATE repositories SET description=$1, updated_at=NOW() WHERE owner_id=$2 AND name=$3`,
-			*req.Description, claims.UserID, name)
+		sets = append(sets, fmt.Sprintf("description=$%d", argN))
+		args = append(args, *req.Description)
+		argN++
 	}
 	if req.Website != nil {
-		h.db.Exec(ctx, `UPDATE repositories SET website=$1, updated_at=NOW() WHERE owner_id=$2 AND name=$3`,
-			*req.Website, claims.UserID, name)
+		sets = append(sets, fmt.Sprintf("website=$%d", argN))
+		args = append(args, *req.Website)
+		argN++
 	}
 	if req.IsPrivate != nil {
-		h.db.Exec(ctx, `UPDATE repositories SET is_private=$1, updated_at=NOW() WHERE owner_id=$2 AND name=$3`,
-			*req.IsPrivate, claims.UserID, name)
+		sets = append(sets, fmt.Sprintf("is_private=$%d", argN))
+		args = append(args, *req.IsPrivate)
+		argN++
 	}
 	if req.DefaultBranch != nil {
-		h.db.Exec(ctx, `UPDATE repositories SET default_branch=$1, updated_at=NOW() WHERE owner_id=$2 AND name=$3`,
-			*req.DefaultBranch, claims.UserID, name)
+		sets = append(sets, fmt.Sprintf("default_branch=$%d", argN))
+		args = append(args, *req.DefaultBranch)
+		argN++
 	}
 	if req.Topics != nil {
-		h.db.Exec(ctx, `UPDATE repositories SET topics=$1, updated_at=NOW() WHERE owner_id=$2 AND name=$3`,
-			req.Topics, claims.UserID, name)
+		sets = append(sets, fmt.Sprintf("topics=$%d", argN))
+		args = append(args, req.Topics)
+		argN++
+	}
+
+	if len(sets) == 0 {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	sets = append(sets, "updated_at=NOW()")
+	query := fmt.Sprintf("UPDATE repositories SET %s WHERE owner_id=$%d AND name=$%d",
+		strings.Join(sets, ", "), argN, argN+1)
+	args = append(args, claims.UserID, name)
+
+	if _, err := h.db.Exec(ctx, query, args...); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update repository")
+		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
