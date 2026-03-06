@@ -70,8 +70,9 @@ func main() {
 		r.Post("/login", h.Login)
 	})
 
-	// Public API
+	// Public API (static routes BEFORE wildcard to avoid conflicts)
 	r.Get("/api/v1/explore/repos", h.ExploreRepos)
+	r.Get("/api/v1/users/search", h.SearchUsers)
 	r.Get("/api/v1/users/{username}", h.GetUserProfile)
 	r.Get("/api/v1/users/{username}/starred", h.ListUserStarred)
 
@@ -84,6 +85,22 @@ func main() {
 		r.Put("/users/me/password", h.ChangePassword)
 		r.Get("/dashboard/stats", h.GetDashboardStats)
 		r.Get("/dashboard/activity", h.GetDashboardActivity)
+
+		// User social (me routes first)
+		r.Get("/users/me/blocked", h.ListBlockedUsers)
+		r.Put("/users/me/status", h.SetStatus)
+		r.Delete("/users/me/status", h.ClearStatus)
+
+		// User social (parameterized)
+		r.Post("/users/{username}/follow", h.FollowUser)
+		r.Delete("/users/{username}/follow", h.UnfollowUser)
+		r.Get("/users/{username}/follow", h.IsFollowing)
+		r.Get("/users/{username}/followers", h.GetFollowers)
+		r.Get("/users/{username}/following", h.GetFollowing)
+		r.Post("/users/{username}/block", h.BlockUser)
+		r.Delete("/users/{username}/block", h.UnblockUser)
+		r.Get("/users/{username}/block", h.IsBlocked)
+		r.Get("/users/{username}/status", h.GetStatus)
 
 		// User preferences
 		r.Get("/users/me/preferences", h.GetPreferences)
@@ -212,6 +229,31 @@ func main() {
 		r.Delete("/orgs/{name}/members/{username}", h.RemoveOrgMember)
 		r.Get("/orgs/{name}/repos", h.ListOrgRepos)
 		r.Post("/orgs/{name}/repos", h.CreateOrgRepo)
+
+		// Posts / Feed
+		r.Get("/posts", h.GetFeed)
+		r.Post("/posts", h.CreatePost)
+		r.Get("/posts/{id}", h.GetPost)
+		r.Put("/posts/{id}", h.UpdatePost)
+		r.Delete("/posts/{id}", h.DeletePost)
+		r.Post("/posts/{id}/like", h.LikePost)
+		r.Delete("/posts/{id}/like", h.UnlikePost)
+		r.Post("/posts/{id}/repost", h.RepostPost)
+		r.Get("/posts/{id}/comments", h.GetPostComments)
+		r.Post("/posts/{id}/comments", h.AddPostComment)
+		r.Delete("/posts/{id}/comments/{commentId}", h.RemovePostComment)
+		r.Get("/users/{username}/posts", h.GetUserPosts)
+
+		// Messages / Chat
+		r.Get("/messages/conversations", h.ListConversations)
+		r.Post("/messages/conversations", h.CreateConversation)
+		r.Get("/messages/conversations/{id}", h.GetConversation)
+		r.Get("/messages/conversations/{conversationId}/messages", h.ListMessages)
+		r.Post("/messages/conversations/{conversationId}/messages", h.SendMessage)
+		r.Put("/messages/conversations/{conversationId}/messages/{messageId}", h.EditMessage)
+		r.Delete("/messages/conversations/{conversationId}/messages/{messageId}", h.DeleteMessage)
+		r.Post("/messages/conversations/{conversationId}/messages/{messageId}/react", h.ReactToMessage)
+		r.Get("/messages/unread", h.UnreadMessageCount)
 
 		// Shortcuts
 		r.Get("/shortcuts", h.ListShortcuts)
