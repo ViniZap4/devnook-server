@@ -39,7 +39,7 @@ func (h *Handler) AdminListUsers(w http.ResponseWriter, r *http.Request) {
 	var users []domain.User
 	if q != "" {
 		rows, err := h.db.Query(ctx,
-			`SELECT id, username, email, full_name, avatar_url, is_admin, created_at, updated_at
+			`SELECT id, username, email, full_name, avatar_url, bio, location, website, is_admin, created_at, updated_at
 			 FROM users WHERE username ILIKE $1 OR email ILIKE $1 OR full_name ILIKE $1
 			 ORDER BY created_at DESC LIMIT $2 OFFSET $3`,
 			"%"+q+"%", perPage, offset)
@@ -51,14 +51,14 @@ func (h *Handler) AdminListUsers(w http.ResponseWriter, r *http.Request) {
 		for rows.Next() {
 			var u domain.User
 			if err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.FullName, &u.AvatarURL,
-				&u.IsAdmin, &u.CreatedAt, &u.UpdatedAt); err != nil {
+				&u.Bio, &u.Location, &u.Website, &u.IsAdmin, &u.CreatedAt, &u.UpdatedAt); err != nil {
 				continue
 			}
 			users = append(users, u)
 		}
 	} else {
 		rows, err := h.db.Query(ctx,
-			`SELECT id, username, email, full_name, avatar_url, is_admin, created_at, updated_at
+			`SELECT id, username, email, full_name, avatar_url, bio, location, website, is_admin, created_at, updated_at
 			 FROM users ORDER BY created_at DESC LIMIT $1 OFFSET $2`,
 			perPage, offset)
 		if err != nil {
@@ -69,7 +69,7 @@ func (h *Handler) AdminListUsers(w http.ResponseWriter, r *http.Request) {
 		for rows.Next() {
 			var u domain.User
 			if err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.FullName, &u.AvatarURL,
-				&u.IsAdmin, &u.CreatedAt, &u.UpdatedAt); err != nil {
+				&u.Bio, &u.Location, &u.Website, &u.IsAdmin, &u.CreatedAt, &u.UpdatedAt); err != nil {
 				continue
 			}
 			users = append(users, u)
@@ -99,9 +99,9 @@ func (h *Handler) AdminGetUser(w http.ResponseWriter, r *http.Request) {
 	username := chi.URLParam(r, "username")
 	var u domain.User
 	err := h.db.QueryRow(context.Background(),
-		`SELECT id, username, email, full_name, avatar_url, is_admin, created_at, updated_at
+		`SELECT id, username, email, full_name, avatar_url, bio, location, website, is_admin, created_at, updated_at
 		 FROM users WHERE username = $1`, username,
-	).Scan(&u.ID, &u.Username, &u.Email, &u.FullName, &u.AvatarURL, &u.IsAdmin, &u.CreatedAt, &u.UpdatedAt)
+	).Scan(&u.ID, &u.Username, &u.Email, &u.FullName, &u.AvatarURL, &u.Bio, &u.Location, &u.Website, &u.IsAdmin, &u.CreatedAt, &u.UpdatedAt)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "user not found")
 		return

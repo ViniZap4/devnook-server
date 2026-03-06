@@ -35,9 +35,9 @@ func (h *Handler) GetUserProfile(w http.ResponseWriter, r *http.Request) {
 
 	var user domain.User
 	err := h.db.QueryRow(context.Background(),
-		`SELECT id, username, email, full_name, avatar_url, is_admin, created_at, updated_at
+		`SELECT id, username, email, full_name, avatar_url, bio, location, website, is_admin, created_at, updated_at
 		 FROM users WHERE username = $1`, username,
-	).Scan(&user.ID, &user.Username, &user.Email, &user.FullName, &user.AvatarURL, &user.IsAdmin, &user.CreatedAt, &user.UpdatedAt)
+	).Scan(&user.ID, &user.Username, &user.Email, &user.FullName, &user.AvatarURL, &user.Bio, &user.Location, &user.Website, &user.IsAdmin, &user.CreatedAt, &user.UpdatedAt)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "user not found")
 		return
@@ -103,9 +103,9 @@ func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tag, err := h.db.Exec(context.Background(),
-		`UPDATE users SET full_name=$1, email=$2, avatar_url=$3, updated_at=NOW()
-		 WHERE id=$4`,
-		req.FullName, req.Email, req.AvatarURL, claims.UserID)
+		`UPDATE users SET full_name=$1, email=$2, avatar_url=$3, bio=$4, location=$5, website=$6, updated_at=NOW()
+		 WHERE id=$7`,
+		req.FullName, req.Email, req.AvatarURL, req.Bio, req.Location, req.Website, claims.UserID)
 	if err != nil || tag.RowsAffected() == 0 {
 		writeError(w, http.StatusInternalServerError, "failed to update profile")
 		return

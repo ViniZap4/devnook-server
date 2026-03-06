@@ -60,9 +60,9 @@ func (h *Handler) Setup(w http.ResponseWriter, r *http.Request) {
 	err = h.db.QueryRow(context.Background(),
 		`INSERT INTO users (username, email, password, full_name, is_admin)
 		 VALUES ($1, $2, $3, $4, true)
-		 RETURNING id, username, email, full_name, avatar_url, is_admin, created_at, updated_at`,
+		 RETURNING id, username, email, full_name, avatar_url, bio, location, website, is_admin, created_at, updated_at`,
 		req.Username, req.Email, string(hash), req.FullName,
-	).Scan(&user.ID, &user.Username, &user.Email, &user.FullName, &user.AvatarURL, &user.IsAdmin, &user.CreatedAt, &user.UpdatedAt)
+	).Scan(&user.ID, &user.Username, &user.Email, &user.FullName, &user.AvatarURL, &user.Bio, &user.Location, &user.Website, &user.IsAdmin, &user.CreatedAt, &user.UpdatedAt)
 	if err != nil {
 		writeError(w, http.StatusConflict, "failed to create admin user")
 		return
@@ -98,9 +98,9 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 	err = h.db.QueryRow(context.Background(),
 		`INSERT INTO users (username, email, password, full_name)
 		 VALUES ($1, $2, $3, $4)
-		 RETURNING id, username, email, full_name, avatar_url, is_admin, created_at, updated_at`,
+		 RETURNING id, username, email, full_name, avatar_url, bio, location, website, is_admin, created_at, updated_at`,
 		req.Username, req.Email, string(hash), req.FullName,
-	).Scan(&user.ID, &user.Username, &user.Email, &user.FullName, &user.AvatarURL, &user.IsAdmin, &user.CreatedAt, &user.UpdatedAt)
+	).Scan(&user.ID, &user.Username, &user.Email, &user.FullName, &user.AvatarURL, &user.Bio, &user.Location, &user.Website, &user.IsAdmin, &user.CreatedAt, &user.UpdatedAt)
 	if err != nil {
 		writeError(w, http.StatusConflict, "username or email already exists")
 		return
@@ -125,9 +125,9 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	var user domain.User
 	var hash string
 	err := h.db.QueryRow(context.Background(),
-		`SELECT id, username, email, password, full_name, avatar_url, is_admin, created_at, updated_at
+		`SELECT id, username, email, password, full_name, avatar_url, bio, location, website, is_admin, created_at, updated_at
 		 FROM users WHERE username = $1`, req.Username,
-	).Scan(&user.ID, &user.Username, &user.Email, &hash, &user.FullName, &user.AvatarURL, &user.IsAdmin, &user.CreatedAt, &user.UpdatedAt)
+	).Scan(&user.ID, &user.Username, &user.Email, &hash, &user.FullName, &user.AvatarURL, &user.Bio, &user.Location, &user.Website, &user.IsAdmin, &user.CreatedAt, &user.UpdatedAt)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "invalid credentials")
 		return
@@ -199,9 +199,9 @@ func (h *Handler) GetCurrentUser(w http.ResponseWriter, r *http.Request) {
 	claims := getClaims(r)
 	var user domain.User
 	err := h.db.QueryRow(context.Background(),
-		`SELECT id, username, email, full_name, avatar_url, is_admin, created_at, updated_at
+		`SELECT id, username, email, full_name, avatar_url, bio, location, website, is_admin, created_at, updated_at
 		 FROM users WHERE id = $1`, claims.UserID,
-	).Scan(&user.ID, &user.Username, &user.Email, &user.FullName, &user.AvatarURL, &user.IsAdmin, &user.CreatedAt, &user.UpdatedAt)
+	).Scan(&user.ID, &user.Username, &user.Email, &user.FullName, &user.AvatarURL, &user.Bio, &user.Location, &user.Website, &user.IsAdmin, &user.CreatedAt, &user.UpdatedAt)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "user not found")
 		return

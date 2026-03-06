@@ -244,6 +244,108 @@ func Migrate(pool *pgxpool.Pool) error {
 			UNIQUE(repo_id, user_id)
 		);
 
+		CREATE TABLE IF NOT EXISTS follows (
+			follower_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			following_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			PRIMARY KEY (follower_id, following_id),
+			CHECK (follower_id != following_id)
+		);
+
+		CREATE TABLE IF NOT EXISTS blocks (
+			blocker_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			blocked_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			PRIMARY KEY (blocker_id, blocked_id),
+			CHECK (blocker_id != blocked_id)
+		);
+
+		CREATE TABLE IF NOT EXISTS user_status (
+			user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+			emoji   TEXT NOT NULL DEFAULT '',
+			message TEXT NOT NULL DEFAULT '',
+			busy    BOOLEAN NOT NULL DEFAULT false,
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+
+		CREATE TABLE IF NOT EXISTS posts (
+			id           BIGSERIAL PRIMARY KEY,
+			author_id    BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			content      TEXT NOT NULL,
+			type         TEXT NOT NULL DEFAULT 'text',
+			repo_owner   TEXT,
+			repo_name    TEXT,
+			commit_hash  TEXT,
+			issue_number INT,
+			org_name     TEXT,
+			tags         TEXT[] NOT NULL DEFAULT '{}',
+			created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+
+		CREATE TABLE IF NOT EXISTS post_likes (
+			user_id    BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			post_id    BIGINT NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			PRIMARY KEY (user_id, post_id)
+		);
+
+		CREATE TABLE IF NOT EXISTS post_comments (
+			id         BIGSERIAL PRIMARY KEY,
+			post_id    BIGINT NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+			author_id  BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			content    TEXT NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+
+		CREATE TABLE IF NOT EXISTS post_reposts (
+			user_id    BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			post_id    BIGINT NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			PRIMARY KEY (user_id, post_id)
+		);
+
+		CREATE TABLE IF NOT EXISTS conversations (
+			id           BIGSERIAL PRIMARY KEY,
+			type         TEXT NOT NULL DEFAULT 'direct',
+			name         TEXT NOT NULL DEFAULT '',
+			repo_owner   TEXT,
+			repo_name    TEXT,
+			org_name     TEXT,
+			issue_number INT,
+			created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+
+		CREATE TABLE IF NOT EXISTS conversation_participants (
+			conversation_id BIGINT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+			user_id         BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			role            TEXT NOT NULL DEFAULT 'member',
+			last_read_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			PRIMARY KEY (conversation_id, user_id)
+		);
+
+		CREATE TABLE IF NOT EXISTS chat_messages (
+			id              BIGSERIAL PRIMARY KEY,
+			conversation_id BIGINT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+			sender_id       BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			content         TEXT NOT NULL,
+			type            TEXT NOT NULL DEFAULT 'text',
+			reply_to_id     BIGINT REFERENCES chat_messages(id) ON DELETE SET NULL,
+			edited          BOOLEAN NOT NULL DEFAULT false,
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+
+		CREATE TABLE IF NOT EXISTS message_reactions (
+			id         BIGSERIAL PRIMARY KEY,
+			message_id BIGINT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+			user_id    BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			emoji      TEXT NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			UNIQUE(message_id, user_id, emoji)
+		);
+
 		-- Migration helpers for existing databases
 		ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT false;
 		ALTER TABLE users ADD COLUMN IF NOT EXISTS bio TEXT NOT NULL DEFAULT '';
