@@ -4,8 +4,10 @@ import (
 	"context"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/ViniZap4/devnook-server/internal/domain"
+	"github.com/ViniZap4/devnook-server/internal/ws"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -270,6 +272,9 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 	// Update conversation's updated_at
 	h.db.Exec(ctx, `UPDATE conversations SET updated_at = NOW() WHERE id = $1`, convoID)
 
+	// Broadcast via WebSocket to all participants
+	go h.broadcastChatMessage(convoID, id, claims.UserID, claims.Username, req.Content, req.Type)
+
 	writeJSON(w, http.StatusCreated, map[string]int64{"id": id})
 }
 
@@ -424,4 +429,61 @@ func (h *Handler) getMessageReactions(ctx context.Context, msgID, userID int64) 
 		return []domain.MessageReaction{}
 	}
 	return reactions
+}
+
+func (h *Handler) broadcastChatMessage(convoID, msgID, senderID int64, senderUsername, content, msgType string) {
+	ctx := context.Background()
+
+	// Get sender full name
+	var senderFullName string
+	h.db.QueryRow(ctx, `SELECT full_name FROM users WHERE id = $1`, senderID).Scan(&senderFullName)
+
+	// Get all participant user IDs
+	rows, err := h.db.Query(ctx,
+		`SELECT user_id FROM conversation_participants WHERE conversation_id = $1`, convoID)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	var participantIDs []int64
+	for rows.Next() {
+		var uid int64
+		if err := rows.Scan(&uid); err == nil {
+			participantIDs = append(participantIDs, uid)
+		}
+	}
+
+	msg := domain.Message{
+		ID:             msgID,
+		ConversationID: convoID,
+		SenderID:       senderID,
+		SenderUsername: senderUsername,
+		SenderFullName: senderFullName,
+		Content:        content,
+		Type:           msgType,
+		Reactions:      []domain.MessageReaction{},
+		CreatedAt:      time.Now(),
+		UpdatedAt:      time.Now(),
+	}
+
+	h.hub.SendToUsers(participantIDs, ws.Event{
+		Type: "chat_message",
+		Data: msg,
+	})
+
+	// Send message_unread event to non-sender participants
+	for _, uid := range participantIDs {
+		if uid == senderID {
+			continue
+		}
+		unread := h.getUnreadCount(ctx, convoID, uid)
+		h.hub.SendToUser(uid, ws.Event{
+			Type: "message_unread",
+			Data: map[string]any{
+				"conversation_id": convoID,
+				"count":           unread,
+			},
+		})
+	}
 }

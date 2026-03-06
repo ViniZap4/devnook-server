@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/ViniZap4/devnook-server/internal/domain"
+	"github.com/ViniZap4/devnook-server/internal/ws"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -80,4 +81,27 @@ func (h *Handler) MarkAllNotificationsRead(w http.ResponseWriter, r *http.Reques
 		`UPDATE notifications SET read = true WHERE user_id = $1 AND read = false`,
 		claims.UserID)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// CreateNotification inserts a notification and pushes it via WebSocket.
+func (h *Handler) CreateNotification(userID int64, repoID *int64, nType, title, body, link string) {
+	ctx := context.Background()
+	var n domain.Notification
+	err := h.db.QueryRow(ctx,
+		`INSERT INTO notifications (user_id, repo_id, type, title, body, link)
+		 VALUES ($1, $2, $3, $4, $5, $6)
+		 RETURNING id, user_id, repo_id, type, title, body, read, link, created_at`,
+		userID, repoID, nType, title, body, link,
+	).Scan(&n.ID, &n.UserID, &n.RepoID, &n.Type, &n.Title, &n.Body, &n.Read, &n.Link, &n.CreatedAt)
+	if err != nil {
+		return
+	}
+
+	h.hub.SendToUser(userID, ws.Event{Type: "notification", Data: n})
+
+	// Also send updated unread count
+	var count int
+	h.db.QueryRow(ctx,
+		`SELECT COUNT(*) FROM notifications WHERE user_id = $1 AND read = false`, userID).Scan(&count)
+	h.hub.SendToUser(userID, ws.Event{Type: "notification_count", Data: map[string]int{"count": count}})
 }

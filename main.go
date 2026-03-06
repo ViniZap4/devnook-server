@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ViniZap4/devnook-server/internal/auth"
 	"github.com/ViniZap4/devnook-server/internal/config"
 	"github.com/ViniZap4/devnook-server/internal/database"
 	"github.com/ViniZap4/devnook-server/internal/handler"
@@ -278,8 +279,20 @@ func main() {
 	r.Post("/{owner}/{repo}.git/git-upload-pack", h.GitUploadPack)
 	r.Post("/{owner}/{repo}.git/git-receive-pack", h.GitReceivePack)
 
-	// WebSocket
-	r.Get("/ws", hub.HandleWebSocket)
+	// WebSocket (auth via ?token= query param)
+	r.Get("/ws", func(w http.ResponseWriter, r *http.Request) {
+		token := r.URL.Query().Get("token")
+		if token == "" {
+			http.Error(w, "missing token", http.StatusUnauthorized)
+			return
+		}
+		claims, err := auth.ValidateToken(token, cfg.Secret)
+		if err != nil {
+			http.Error(w, "invalid token", http.StatusUnauthorized)
+			return
+		}
+		hub.HandleWebSocket(w, r, claims.UserID)
+	})
 
 	port := cfg.Port
 	if port == "" {
