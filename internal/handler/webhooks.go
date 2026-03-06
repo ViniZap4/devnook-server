@@ -2,8 +2,10 @@ package handler
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/ViniZap4/devnook-server/internal/domain"
 	"github.com/go-chi/chi/v5"
@@ -99,17 +101,44 @@ func (h *Handler) UpdateWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := context.Background()
+	sets := []string{}
+	args := []any{}
+	argN := 1
+
 	if req.URL != "" {
-		h.db.Exec(ctx, `UPDATE webhooks SET url=$1, updated_at=NOW() WHERE id=$2`, req.URL, id)
+		sets = append(sets, fmt.Sprintf("url=$%d", argN))
+		args = append(args, req.URL)
+		argN++
 	}
 	if req.Events != nil {
-		h.db.Exec(ctx, `UPDATE webhooks SET events=$1, updated_at=NOW() WHERE id=$2`, req.Events, id)
+		sets = append(sets, fmt.Sprintf("events=$%d", argN))
+		args = append(args, req.Events)
+		argN++
 	}
 	if req.Active != nil {
-		h.db.Exec(ctx, `UPDATE webhooks SET active=$1, updated_at=NOW() WHERE id=$2`, *req.Active, id)
+		sets = append(sets, fmt.Sprintf("active=$%d", argN))
+		args = append(args, *req.Active)
+		argN++
 	}
 	if req.Secret != "" {
-		h.db.Exec(ctx, `UPDATE webhooks SET secret=$1, updated_at=NOW() WHERE id=$2`, req.Secret, id)
+		sets = append(sets, fmt.Sprintf("secret=$%d", argN))
+		args = append(args, req.Secret)
+		argN++
+	}
+
+	if len(sets) == 0 {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	sets = append(sets, "updated_at=NOW()")
+	query := fmt.Sprintf("UPDATE webhooks SET %s WHERE id=$%d",
+		strings.Join(sets, ", "), argN)
+	args = append(args, id)
+
+	if _, err := h.db.Exec(ctx, query, args...); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update webhook")
+		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

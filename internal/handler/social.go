@@ -19,41 +19,24 @@ func (h *Handler) SearchUsers(w http.ResponseWriter, r *http.Request) {
 
 	pattern := "%" + q + "%"
 	rows, err := h.db.Query(context.Background(),
-		`SELECT id, username, email, full_name, avatar_url, bio, location, website, is_admin, created_at, updated_at
-		 FROM users
-		 WHERE username ILIKE $1 OR full_name ILIKE $1
-		 ORDER BY username
-		 LIMIT 20`, pattern)
+		`SELECT `+userColumns+` FROM users WHERE username ILIKE $1 OR full_name ILIKE $1 ORDER BY username LIMIT 20`,
+		pattern)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "search failed")
 		return
 	}
 	defer rows.Close()
 
-	var users []domain.User
-	for rows.Next() {
-		var u domain.User
-		if err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.FullName, &u.AvatarURL,
-			&u.Bio, &u.Location, &u.Website, &u.IsAdmin, &u.CreatedAt, &u.UpdatedAt); err != nil {
-			continue
-		}
-		users = append(users, u)
-	}
-	if users == nil {
-		users = []domain.User{}
-	}
-	writeJSON(w, http.StatusOK, users)
+	writeJSON(w, http.StatusOK, scanUsers(rows))
 }
 
 // ── Follow ──────────────────────────────────────────────────────────
 
 func (h *Handler) FollowUser(w http.ResponseWriter, r *http.Request) {
 	claims := getClaims(r)
-	username := chi.URLParam(r, "username")
+	ctx := context.Background()
 
-	var targetID int64
-	err := h.db.QueryRow(context.Background(),
-		`SELECT id FROM users WHERE username = $1`, username).Scan(&targetID)
+	targetID, err := h.resolveUserID(ctx, chi.URLParam(r, "username"))
 	if err != nil {
 		writeError(w, http.StatusNotFound, "user not found")
 		return
@@ -63,7 +46,7 @@ func (h *Handler) FollowUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err = h.db.Exec(context.Background(),
+	_, err = h.db.Exec(ctx,
 		`INSERT INTO follows (follower_id, following_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
 		claims.UserID, targetID)
 	if err != nil {
@@ -75,17 +58,15 @@ func (h *Handler) FollowUser(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) UnfollowUser(w http.ResponseWriter, r *http.Request) {
 	claims := getClaims(r)
-	username := chi.URLParam(r, "username")
+	ctx := context.Background()
 
-	var targetID int64
-	err := h.db.QueryRow(context.Background(),
-		`SELECT id FROM users WHERE username = $1`, username).Scan(&targetID)
+	targetID, err := h.resolveUserID(ctx, chi.URLParam(r, "username"))
 	if err != nil {
 		writeError(w, http.StatusNotFound, "user not found")
 		return
 	}
 
-	_, err = h.db.Exec(context.Background(),
+	_, err = h.db.Exec(ctx,
 		`DELETE FROM follows WHERE follower_id = $1 AND following_id = $2`,
 		claims.UserID, targetID)
 	if err != nil {
@@ -97,18 +78,16 @@ func (h *Handler) UnfollowUser(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) IsFollowing(w http.ResponseWriter, r *http.Request) {
 	claims := getClaims(r)
-	username := chi.URLParam(r, "username")
+	ctx := context.Background()
 
-	var targetID int64
-	err := h.db.QueryRow(context.Background(),
-		`SELECT id FROM users WHERE username = $1`, username).Scan(&targetID)
+	targetID, err := h.resolveUserID(ctx, chi.URLParam(r, "username"))
 	if err != nil {
 		writeError(w, http.StatusNotFound, "user not found")
 		return
 	}
 
 	var count int
-	h.db.QueryRow(context.Background(),
+	h.db.QueryRow(ctx,
 		`SELECT COUNT(*) FROM follows WHERE follower_id = $1 AND following_id = $2`,
 		claims.UserID, targetID).Scan(&count)
 
@@ -119,8 +98,7 @@ func (h *Handler) GetFollowers(w http.ResponseWriter, r *http.Request) {
 	username := chi.URLParam(r, "username")
 
 	rows, err := h.db.Query(context.Background(),
-		`SELECT u.id, u.username, u.email, u.full_name, u.avatar_url, u.bio, u.location, u.website, u.is_admin, u.created_at, u.updated_at
-		 FROM users u
+		`SELECT `+userColumnsAs+` FROM users u
 		 JOIN follows f ON f.follower_id = u.id
 		 JOIN users t ON t.id = f.following_id
 		 WHERE t.username = $1
@@ -131,27 +109,14 @@ func (h *Handler) GetFollowers(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	var users []domain.User
-	for rows.Next() {
-		var u domain.User
-		if err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.FullName, &u.AvatarURL,
-			&u.Bio, &u.Location, &u.Website, &u.IsAdmin, &u.CreatedAt, &u.UpdatedAt); err != nil {
-			continue
-		}
-		users = append(users, u)
-	}
-	if users == nil {
-		users = []domain.User{}
-	}
-	writeJSON(w, http.StatusOK, users)
+	writeJSON(w, http.StatusOK, scanUsers(rows))
 }
 
 func (h *Handler) GetFollowing(w http.ResponseWriter, r *http.Request) {
 	username := chi.URLParam(r, "username")
 
 	rows, err := h.db.Query(context.Background(),
-		`SELECT u.id, u.username, u.email, u.full_name, u.avatar_url, u.bio, u.location, u.website, u.is_admin, u.created_at, u.updated_at
-		 FROM users u
+		`SELECT `+userColumnsAs+` FROM users u
 		 JOIN follows f ON f.following_id = u.id
 		 JOIN users t ON t.id = f.follower_id
 		 WHERE t.username = $1
@@ -162,30 +127,16 @@ func (h *Handler) GetFollowing(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	var users []domain.User
-	for rows.Next() {
-		var u domain.User
-		if err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.FullName, &u.AvatarURL,
-			&u.Bio, &u.Location, &u.Website, &u.IsAdmin, &u.CreatedAt, &u.UpdatedAt); err != nil {
-			continue
-		}
-		users = append(users, u)
-	}
-	if users == nil {
-		users = []domain.User{}
-	}
-	writeJSON(w, http.StatusOK, users)
+	writeJSON(w, http.StatusOK, scanUsers(rows))
 }
 
 // ── Block ───────────────────────────────────────────────────────────
 
 func (h *Handler) BlockUser(w http.ResponseWriter, r *http.Request) {
 	claims := getClaims(r)
-	username := chi.URLParam(r, "username")
+	ctx := context.Background()
 
-	var targetID int64
-	err := h.db.QueryRow(context.Background(),
-		`SELECT id FROM users WHERE username = $1`, username).Scan(&targetID)
+	targetID, err := h.resolveUserID(ctx, chi.URLParam(r, "username"))
 	if err != nil {
 		writeError(w, http.StatusNotFound, "user not found")
 		return
@@ -195,7 +146,6 @@ func (h *Handler) BlockUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx := context.Background()
 	// Remove any follow relationships in both directions
 	h.db.Exec(ctx, `DELETE FROM follows WHERE (follower_id=$1 AND following_id=$2) OR (follower_id=$2 AND following_id=$1)`,
 		claims.UserID, targetID)
@@ -212,17 +162,15 @@ func (h *Handler) BlockUser(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) UnblockUser(w http.ResponseWriter, r *http.Request) {
 	claims := getClaims(r)
-	username := chi.URLParam(r, "username")
+	ctx := context.Background()
 
-	var targetID int64
-	err := h.db.QueryRow(context.Background(),
-		`SELECT id FROM users WHERE username = $1`, username).Scan(&targetID)
+	targetID, err := h.resolveUserID(ctx, chi.URLParam(r, "username"))
 	if err != nil {
 		writeError(w, http.StatusNotFound, "user not found")
 		return
 	}
 
-	_, err = h.db.Exec(context.Background(),
+	_, err = h.db.Exec(ctx,
 		`DELETE FROM blocks WHERE blocker_id = $1 AND blocked_id = $2`,
 		claims.UserID, targetID)
 	if err != nil {
@@ -234,18 +182,16 @@ func (h *Handler) UnblockUser(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) IsBlocked(w http.ResponseWriter, r *http.Request) {
 	claims := getClaims(r)
-	username := chi.URLParam(r, "username")
+	ctx := context.Background()
 
-	var targetID int64
-	err := h.db.QueryRow(context.Background(),
-		`SELECT id FROM users WHERE username = $1`, username).Scan(&targetID)
+	targetID, err := h.resolveUserID(ctx, chi.URLParam(r, "username"))
 	if err != nil {
 		writeError(w, http.StatusNotFound, "user not found")
 		return
 	}
 
 	var count int
-	h.db.QueryRow(context.Background(),
+	h.db.QueryRow(ctx,
 		`SELECT COUNT(*) FROM blocks WHERE blocker_id = $1 AND blocked_id = $2`,
 		claims.UserID, targetID).Scan(&count)
 
@@ -256,8 +202,7 @@ func (h *Handler) ListBlockedUsers(w http.ResponseWriter, r *http.Request) {
 	claims := getClaims(r)
 
 	rows, err := h.db.Query(context.Background(),
-		`SELECT u.id, u.username, u.email, u.full_name, u.avatar_url, u.bio, u.location, u.website, u.is_admin, u.created_at, u.updated_at
-		 FROM users u
+		`SELECT `+userColumnsAs+` FROM users u
 		 JOIN blocks b ON b.blocked_id = u.id
 		 WHERE b.blocker_id = $1
 		 ORDER BY b.created_at DESC`, claims.UserID)
@@ -267,19 +212,7 @@ func (h *Handler) ListBlockedUsers(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	var users []domain.User
-	for rows.Next() {
-		var u domain.User
-		if err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.FullName, &u.AvatarURL,
-			&u.Bio, &u.Location, &u.Website, &u.IsAdmin, &u.CreatedAt, &u.UpdatedAt); err != nil {
-			continue
-		}
-		users = append(users, u)
-	}
-	if users == nil {
-		users = []domain.User{}
-	}
-	writeJSON(w, http.StatusOK, users)
+	writeJSON(w, http.StatusOK, scanUsers(rows))
 }
 
 // ── Status ──────────────────────────────────────────────────────────
@@ -319,7 +252,6 @@ func (h *Handler) GetStatus(w http.ResponseWriter, r *http.Request) {
 		 WHERE u.username = $1`, username,
 	).Scan(&status.Emoji, &status.Message, &status.Busy)
 	if err != nil {
-		// No status set — return empty
 		writeJSON(w, http.StatusOK, domain.UserStatus{})
 		return
 	}
@@ -332,3 +264,4 @@ func (h *Handler) ClearStatus(w http.ResponseWriter, r *http.Request) {
 		`DELETE FROM user_status WHERE user_id = $1`, claims.UserID)
 	w.WriteHeader(http.StatusNoContent)
 }
+

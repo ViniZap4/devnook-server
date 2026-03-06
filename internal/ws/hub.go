@@ -79,17 +79,33 @@ func (h *Hub) Run(ctx context.Context) {
 			h.mu.Unlock()
 		case msg := <-h.broadcast:
 			h.mu.RLock()
+			var stale []*Client
 			for _, clients := range h.userClients {
 				for client := range clients {
 					select {
 					case client.send <- msg:
 					default:
-						close(client.send)
-						delete(h.userClients[client.UserID], client)
+						stale = append(stale, client)
 					}
 				}
 			}
 			h.mu.RUnlock()
+			// Clean up stale clients under write lock
+			if len(stale) > 0 {
+				h.mu.Lock()
+				for _, client := range stale {
+					if clients, ok := h.userClients[client.UserID]; ok {
+						if _, exists := clients[client]; exists {
+							delete(clients, client)
+							close(client.send)
+							if len(clients) == 0 {
+								delete(h.userClients, client.UserID)
+							}
+						}
+					}
+				}
+				h.mu.Unlock()
+			}
 		}
 	}
 }
@@ -103,6 +119,7 @@ func (h *Hub) Broadcast(msg []byte) {
 func (h *Hub) SendToUser(userID int64, event Event) {
 	data, err := json.Marshal(event)
 	if err != nil {
+		log.Printf("ws: failed to marshal event %q: %v", event.Type, err)
 		return
 	}
 	h.mu.RLock()
@@ -121,6 +138,7 @@ func (h *Hub) SendToUser(userID int64, event Event) {
 func (h *Hub) SendToUsers(userIDs []int64, event Event) {
 	data, err := json.Marshal(event)
 	if err != nil {
+		log.Printf("ws: failed to marshal event %q: %v", event.Type, err)
 		return
 	}
 	h.mu.RLock()

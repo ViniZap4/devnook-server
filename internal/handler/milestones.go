@@ -2,8 +2,10 @@ package handler
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/ViniZap4/devnook-server/internal/domain"
@@ -131,25 +133,52 @@ func (h *Handler) UpdateMilestone(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := context.Background()
+	sets := []string{}
+	args := []any{}
+	argN := 1
+
 	if req.Title != "" {
-		h.db.Exec(ctx, `UPDATE milestones SET title=$1, updated_at=NOW() WHERE id=$2`, req.Title, id)
+		sets = append(sets, fmt.Sprintf("title=$%d", argN))
+		args = append(args, req.Title)
+		argN++
 	}
 	if req.Description != "" {
-		h.db.Exec(ctx, `UPDATE milestones SET description=$1, updated_at=NOW() WHERE id=$2`, req.Description, id)
+		sets = append(sets, fmt.Sprintf("description=$%d", argN))
+		args = append(args, req.Description)
+		argN++
 	}
 	if req.State != nil {
-		h.db.Exec(ctx, `UPDATE milestones SET state=$1, updated_at=NOW() WHERE id=$2`, *req.State, id)
+		sets = append(sets, fmt.Sprintf("state=$%d", argN))
+		args = append(args, *req.State)
+		argN++
 	}
 	if req.DueDate != nil {
 		if *req.DueDate == "" {
-			h.db.Exec(ctx, `UPDATE milestones SET due_date=NULL, updated_at=NOW() WHERE id=$1`, id)
+			sets = append(sets, "due_date=NULL")
 		} else {
 			t, err := time.Parse(time.RFC3339, *req.DueDate)
 			if err != nil {
 				t, _ = time.Parse("2006-01-02", *req.DueDate)
 			}
-			h.db.Exec(ctx, `UPDATE milestones SET due_date=$1, updated_at=NOW() WHERE id=$2`, t, id)
+			sets = append(sets, fmt.Sprintf("due_date=$%d", argN))
+			args = append(args, t)
+			argN++
 		}
+	}
+
+	if len(sets) == 0 {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	sets = append(sets, "updated_at=NOW()")
+	query := fmt.Sprintf("UPDATE milestones SET %s WHERE id=$%d",
+		strings.Join(sets, ", "), argN)
+	args = append(args, id)
+
+	if _, err := h.db.Exec(ctx, query, args...); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update milestone")
+		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

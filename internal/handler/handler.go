@@ -9,6 +9,7 @@ import (
 
 	"github.com/ViniZap4/devnook-server/internal/auth"
 	"github.com/ViniZap4/devnook-server/internal/config"
+	"github.com/ViniZap4/devnook-server/internal/domain"
 	"github.com/ViniZap4/devnook-server/internal/ws"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -68,4 +69,42 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 func readJSON(r *http.Request, v any) error {
 	defer r.Body.Close()
 	return json.NewDecoder(r.Body).Decode(v)
+}
+
+// userColumns is the standard column list for scanning a User (without password).
+const userColumns = `id, username, email, full_name, avatar_url, bio, location, website, is_admin, created_at, updated_at`
+
+// userColumnsAs returns the column list with a table alias prefix (e.g. "u.").
+const userColumnsAs = `u.id, u.username, u.email, u.full_name, u.avatar_url, u.bio, u.location, u.website, u.is_admin, u.created_at, u.updated_at`
+
+// scanUser returns pointers to all scannable User fields in column order.
+func scanUser(u *domain.User) []any {
+	return []any{&u.ID, &u.Username, &u.Email, &u.FullName, &u.AvatarURL,
+		&u.Bio, &u.Location, &u.Website, &u.IsAdmin, &u.CreatedAt, &u.UpdatedAt}
+}
+
+// resolveUserID looks up a user by username and returns their ID.
+func (h *Handler) resolveUserID(ctx context.Context, username string) (int64, error) {
+	var id int64
+	err := h.db.QueryRow(ctx, `SELECT id FROM users WHERE username = $1`, username).Scan(&id)
+	return id, err
+}
+
+// scanUsers scans rows of user columns into a User slice, returning an empty (non-nil) slice if there are no rows.
+func scanUsers(rows interface {
+	Next() bool
+	Scan(dest ...any) error
+}) []domain.User {
+	var users []domain.User
+	for rows.Next() {
+		var u domain.User
+		if err := rows.Scan(scanUser(&u)...); err != nil {
+			continue
+		}
+		users = append(users, u)
+	}
+	if users == nil {
+		return []domain.User{}
+	}
+	return users
 }

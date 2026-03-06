@@ -334,37 +334,58 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 
 	// Build dynamic update
 	ctx := context.Background()
+	sets := []string{}
+	args := []any{}
+	argN := 1
+
 	if req.Title != nil {
-		h.db.Exec(ctx, `UPDATE issues SET title=$1, updated_at=NOW() WHERE repo_id=$2 AND number=$3`,
-			*req.Title, repoID, number)
+		sets = append(sets, fmt.Sprintf("title=$%d", argN))
+		args = append(args, *req.Title)
+		argN++
 	}
 	if req.Body != nil {
-		h.db.Exec(ctx, `UPDATE issues SET body=$1, updated_at=NOW() WHERE repo_id=$2 AND number=$3`,
-			*req.Body, repoID, number)
+		sets = append(sets, fmt.Sprintf("body=$%d", argN))
+		args = append(args, *req.Body)
+		argN++
 	}
 	if req.State != nil {
-		h.db.Exec(ctx, `UPDATE issues SET state=$1, updated_at=NOW() WHERE repo_id=$2 AND number=$3`,
-			*req.State, repoID, number)
+		sets = append(sets, fmt.Sprintf("state=$%d", argN))
+		args = append(args, *req.State)
+		argN++
 	}
 	if req.MilestoneID != nil {
 		if *req.MilestoneID == 0 {
-			h.db.Exec(ctx, `UPDATE issues SET milestone_id=NULL, updated_at=NOW() WHERE repo_id=$1 AND number=$2`,
-				repoID, number)
+			sets = append(sets, "milestone_id=NULL")
 		} else {
-			h.db.Exec(ctx, `UPDATE issues SET milestone_id=$1, updated_at=NOW() WHERE repo_id=$2 AND number=$3`,
-				*req.MilestoneID, repoID, number)
+			sets = append(sets, fmt.Sprintf("milestone_id=$%d", argN))
+			args = append(args, *req.MilestoneID)
+			argN++
 		}
 	}
 	if req.AssigneeID != nil {
 		if *req.AssigneeID == 0 {
-			h.db.Exec(ctx, `UPDATE issues SET assignee_id=NULL, updated_at=NOW() WHERE repo_id=$1 AND number=$2`,
-				repoID, number)
+			sets = append(sets, "assignee_id=NULL")
 		} else {
-			h.db.Exec(ctx, `UPDATE issues SET assignee_id=$1, updated_at=NOW() WHERE repo_id=$2 AND number=$3`,
-				*req.AssigneeID, repoID, number)
+			sets = append(sets, fmt.Sprintf("assignee_id=$%d", argN))
+			args = append(args, *req.AssigneeID)
+			argN++
 		}
 	}
 
+	if len(sets) == 0 {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	sets = append(sets, "updated_at=NOW()")
+	query := fmt.Sprintf("UPDATE issues SET %s WHERE repo_id=$%d AND number=$%d",
+		strings.Join(sets, ", "), argN, argN+1)
+	args = append(args, repoID, number)
+
+	if _, err := h.db.Exec(ctx, query, args...); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update issue")
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
