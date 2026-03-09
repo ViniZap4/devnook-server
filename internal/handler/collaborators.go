@@ -54,12 +54,25 @@ func (h *Handler) ListCollaborators(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) AddCollaborator(w http.ResponseWriter, r *http.Request) {
+	claims := getClaims(r)
 	owner := chi.URLParam(r, "owner")
 	name := chi.URLParam(r, "name")
 
 	repoID, err := h.getRepoID(owner, name)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "repository not found")
+		return
+	}
+
+	// Verify caller owns the repo
+	var ownerID int64
+	if err := h.db.QueryRow(context.Background(),
+		`SELECT owner_id FROM repositories WHERE id = $1`, repoID).Scan(&ownerID); err != nil {
+		writeError(w, http.StatusNotFound, "repository not found")
+		return
+	}
+	if claims.UserID != ownerID {
+		writeError(w, http.StatusForbidden, "only the repository owner can manage collaborators")
 		return
 	}
 
@@ -101,6 +114,7 @@ func (h *Handler) AddCollaborator(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) RemoveCollaborator(w http.ResponseWriter, r *http.Request) {
+	claims := getClaims(r)
 	owner := chi.URLParam(r, "owner")
 	name := chi.URLParam(r, "name")
 	username := chi.URLParam(r, "username")
@@ -108,6 +122,18 @@ func (h *Handler) RemoveCollaborator(w http.ResponseWriter, r *http.Request) {
 	repoID, err := h.getRepoID(owner, name)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "repository not found")
+		return
+	}
+
+	// Verify caller owns the repo
+	var ownerID int64
+	if err := h.db.QueryRow(context.Background(),
+		`SELECT owner_id FROM repositories WHERE id = $1`, repoID).Scan(&ownerID); err != nil {
+		writeError(w, http.StatusNotFound, "repository not found")
+		return
+	}
+	if claims.UserID != ownerID {
+		writeError(w, http.StatusForbidden, "only the repository owner can manage collaborators")
 		return
 	}
 

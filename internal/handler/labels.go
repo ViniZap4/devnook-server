@@ -48,12 +48,26 @@ func (h *Handler) ListLabels(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) CreateLabel(w http.ResponseWriter, r *http.Request) {
+	claims := getClaims(r)
 	owner := chi.URLParam(r, "owner")
 	name := chi.URLParam(r, "name")
 
 	repoID, err := h.getRepoID(owner, name)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "repository not found")
+		return
+	}
+
+	// Verify caller owns the repo
+	var ownerID int64
+	err = h.db.QueryRow(context.Background(),
+		`SELECT r.owner_id FROM repositories r WHERE r.id = $1`, repoID).Scan(&ownerID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "repository not found")
+		return
+	}
+	if claims.UserID != ownerID {
+		writeError(w, http.StatusForbidden, "only the repository owner can create labels")
 		return
 	}
 
@@ -83,9 +97,23 @@ func (h *Handler) CreateLabel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) UpdateLabel(w http.ResponseWriter, r *http.Request) {
+	claims := getClaims(r)
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid label id")
+		return
+	}
+
+	// Verify caller owns the repo this label belongs to
+	var ownerID int64
+	err = h.db.QueryRow(context.Background(),
+		`SELECT r.owner_id FROM labels l JOIN repositories r ON r.id = l.repo_id WHERE l.id = $1`, id).Scan(&ownerID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "label not found")
+		return
+	}
+	if claims.UserID != ownerID {
+		writeError(w, http.StatusForbidden, "only the repository owner can update labels")
 		return
 	}
 
@@ -106,17 +134,27 @@ func (h *Handler) UpdateLabel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) DeleteLabel(w http.ResponseWriter, r *http.Request) {
+	claims := getClaims(r)
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid label id")
 		return
 	}
 
-	tag, err := h.db.Exec(context.Background(), `DELETE FROM labels WHERE id = $1`, id)
-	if err != nil || tag.RowsAffected() == 0 {
+	// Verify caller owns the repo this label belongs to
+	var ownerID int64
+	err = h.db.QueryRow(context.Background(),
+		`SELECT r.owner_id FROM labels l JOIN repositories r ON r.id = l.repo_id WHERE l.id = $1`, id).Scan(&ownerID)
+	if err != nil {
 		writeError(w, http.StatusNotFound, "label not found")
 		return
 	}
+	if claims.UserID != ownerID {
+		writeError(w, http.StatusForbidden, "only the repository owner can delete labels")
+		return
+	}
+
+	h.db.Exec(context.Background(), `DELETE FROM labels WHERE id = $1`, id)
 	w.WriteHeader(http.StatusNoContent)
 }
 

@@ -312,6 +312,7 @@ func (h *Handler) GetIssue(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
+	claims := getClaims(r)
 	owner := chi.URLParam(r, "owner")
 	name := chi.URLParam(r, "name")
 	number, err := strconv.Atoi(chi.URLParam(r, "number"))
@@ -323,6 +324,20 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	repoID, err := h.getRepoID(owner, name)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "repository not found")
+		return
+	}
+
+	// Verify caller is issue author or repo owner
+	var authorID, repoOwnerID int64
+	err = h.db.QueryRow(context.Background(),
+		`SELECT i.author_id, r.owner_id FROM issues i JOIN repositories r ON r.id = i.repo_id
+		 WHERE i.repo_id = $1 AND i.number = $2`, repoID, number).Scan(&authorID, &repoOwnerID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "issue not found")
+		return
+	}
+	if claims.UserID != authorID && claims.UserID != repoOwnerID {
+		writeError(w, http.StatusForbidden, "only the issue author or repo owner can update this issue")
 		return
 	}
 

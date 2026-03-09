@@ -37,10 +37,24 @@ func (h *Handler) ListMilestones(w http.ResponseWriter, r *http.Request) {
 	var query string
 	var args []any
 	if state == "all" {
-		query = `SELECT id, repo_id, title, description, state, due_date, created_at, updated_at FROM milestones WHERE repo_id = $1 ORDER BY created_at DESC`
+		query = `SELECT m.id, m.repo_id, m.title, m.description, m.state, m.due_date, m.created_at, m.updated_at,
+		                COALESCE(SUM(CASE WHEN i.state = 'open' THEN 1 ELSE 0 END), 0) AS open_issues,
+		                COALESCE(SUM(CASE WHEN i.state = 'closed' THEN 1 ELSE 0 END), 0) AS closed_issues
+		         FROM milestones m
+		         LEFT JOIN issues i ON i.milestone_id = m.id
+		         WHERE m.repo_id = $1
+		         GROUP BY m.id
+		         ORDER BY m.created_at DESC`
 		args = []any{repoID}
 	} else {
-		query = `SELECT id, repo_id, title, description, state, due_date, created_at, updated_at FROM milestones WHERE repo_id = $1 AND state = $2 ORDER BY created_at DESC`
+		query = `SELECT m.id, m.repo_id, m.title, m.description, m.state, m.due_date, m.created_at, m.updated_at,
+		                COALESCE(SUM(CASE WHEN i.state = 'open' THEN 1 ELSE 0 END), 0) AS open_issues,
+		                COALESCE(SUM(CASE WHEN i.state = 'closed' THEN 1 ELSE 0 END), 0) AS closed_issues
+		         FROM milestones m
+		         LEFT JOIN issues i ON i.milestone_id = m.id
+		         WHERE m.repo_id = $1 AND m.state = $2
+		         GROUP BY m.id
+		         ORDER BY m.created_at DESC`
 		args = []any{repoID, state}
 	}
 
@@ -54,18 +68,9 @@ func (h *Handler) ListMilestones(w http.ResponseWriter, r *http.Request) {
 	var milestones []domain.Milestone
 	for rows.Next() {
 		var m domain.Milestone
-		if err := rows.Scan(&m.ID, &m.RepoID, &m.Title, &m.Description, &m.State, &m.DueDate, &m.CreatedAt, &m.UpdatedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.RepoID, &m.Title, &m.Description, &m.State, &m.DueDate, &m.CreatedAt, &m.UpdatedAt, &m.OpenIssues, &m.ClosedIssues); err != nil {
 			continue
 		}
-
-		// Count open/closed issues
-		h.db.QueryRow(context.Background(),
-			`SELECT COUNT(*) FROM issues WHERE milestone_id = $1 AND state = 'open'`, m.ID,
-		).Scan(&m.OpenIssues)
-		h.db.QueryRow(context.Background(),
-			`SELECT COUNT(*) FROM issues WHERE milestone_id = $1 AND state = 'closed'`, m.ID,
-		).Scan(&m.ClosedIssues)
-
 		milestones = append(milestones, m)
 	}
 	if milestones == nil {
