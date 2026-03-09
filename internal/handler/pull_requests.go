@@ -2,9 +2,11 @@ package handler
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os/exec"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/ViniZap4/devnook-server/internal/domain"
@@ -171,6 +173,7 @@ func (h *Handler) GetPullRequest(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) UpdatePullRequest(w http.ResponseWriter, r *http.Request) {
+	claims := getClaims(r)
 	owner := chi.URLParam(r, "owner")
 	name := chi.URLParam(r, "name")
 	number, err := strconv.Atoi(chi.URLParam(r, "number"))
@@ -185,6 +188,20 @@ func (h *Handler) UpdatePullRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Verify caller is PR author or repo owner
+	var prAuthorID, repoOwnerID int64
+	err = h.db.QueryRow(context.Background(),
+		`SELECT p.author_id, r.owner_id FROM pull_requests p JOIN repositories r ON r.id = p.repo_id
+		 WHERE p.repo_id = $1 AND p.number = $2`, repoID, number).Scan(&prAuthorID, &repoOwnerID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "pull request not found")
+		return
+	}
+	if claims.UserID != prAuthorID && claims.UserID != repoOwnerID {
+		writeError(w, http.StatusForbidden, "only the PR author or repo owner can update this pull request")
+		return
+	}
+
 	var req updatePRRequest
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -192,17 +209,39 @@ func (h *Handler) UpdatePullRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := context.Background()
+	sets := []string{}
+	args := []any{}
+	argN := 1
+
 	if req.Title != nil {
-		h.db.Exec(ctx, `UPDATE pull_requests SET title=$1, updated_at=NOW() WHERE repo_id=$2 AND number=$3`,
-			*req.Title, repoID, number)
+		sets = append(sets, fmt.Sprintf("title=$%d", argN))
+		args = append(args, *req.Title)
+		argN++
 	}
 	if req.Body != nil {
-		h.db.Exec(ctx, `UPDATE pull_requests SET body=$1, updated_at=NOW() WHERE repo_id=$2 AND number=$3`,
-			*req.Body, repoID, number)
+		sets = append(sets, fmt.Sprintf("body=$%d", argN))
+		args = append(args, *req.Body)
+		argN++
 	}
 	if req.State != nil {
-		h.db.Exec(ctx, `UPDATE pull_requests SET state=$1, updated_at=NOW() WHERE repo_id=$2 AND number=$3`,
-			*req.State, repoID, number)
+		sets = append(sets, fmt.Sprintf("state=$%d", argN))
+		args = append(args, *req.State)
+		argN++
+	}
+
+	if len(sets) == 0 {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	sets = append(sets, "updated_at=NOW()")
+	query := fmt.Sprintf("UPDATE pull_requests SET %s WHERE repo_id=$%d AND number=$%d",
+		strings.Join(sets, ", "), argN, argN+1)
+	args = append(args, repoID, number)
+
+	if _, err := h.db.Exec(ctx, query, args...); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update pull request")
+		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

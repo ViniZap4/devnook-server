@@ -20,7 +20,14 @@ func (h *Handler) StarRepo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := context.Background()
-	_, err = h.db.Exec(ctx,
+	tx, err := h.db.Begin(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to start transaction")
+		return
+	}
+	defer tx.Rollback(ctx)
+
+	_, err = tx.Exec(ctx,
 		`INSERT INTO stars (user_id, repo_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
 		claims.UserID, repoID)
 	if err != nil {
@@ -28,10 +35,14 @@ func (h *Handler) StarRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.db.Exec(ctx,
+	tx.Exec(ctx,
 		`UPDATE repositories SET stars_count = (SELECT COUNT(*) FROM stars WHERE repo_id = $1) WHERE id = $1`,
 		repoID)
 
+	if err := tx.Commit(ctx); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to commit")
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -47,11 +58,22 @@ func (h *Handler) UnstarRepo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := context.Background()
-	h.db.Exec(ctx, `DELETE FROM stars WHERE user_id = $1 AND repo_id = $2`, claims.UserID, repoID)
-	h.db.Exec(ctx,
+	tx, err := h.db.Begin(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to start transaction")
+		return
+	}
+	defer tx.Rollback(ctx)
+
+	tx.Exec(ctx, `DELETE FROM stars WHERE user_id = $1 AND repo_id = $2`, claims.UserID, repoID)
+	tx.Exec(ctx,
 		`UPDATE repositories SET stars_count = (SELECT COUNT(*) FROM stars WHERE repo_id = $1) WHERE id = $1`,
 		repoID)
 
+	if err := tx.Commit(ctx); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to commit")
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

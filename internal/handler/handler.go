@@ -51,7 +51,8 @@ func (h *Handler) AuthMiddleware(next http.Handler) http.Handler {
 }
 
 func getClaims(r *http.Request) *auth.Claims {
-	return r.Context().Value(userClaimsKey).(*auth.Claims)
+	claims, _ := r.Context().Value(userClaimsKey).(*auth.Claims)
+	return claims
 }
 
 func writeJSON(w http.ResponseWriter, status int, data any) {

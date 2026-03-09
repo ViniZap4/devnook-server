@@ -86,9 +86,25 @@ func (h *Handler) CreateFile(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 	path := chi.URLParam(r, "*")
 
-	if owner != claims.Username {
-		writeError(w, http.StatusForbidden, "not your repository")
+	// Verify caller has write access
+	repoID, err := h.getRepoID(owner, name)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "repository not found")
 		return
+	}
+	var repoOwnerID int64
+	h.db.QueryRow(context.Background(),
+		`SELECT owner_id FROM repositories WHERE id = $1`, repoID).Scan(&repoOwnerID)
+	if claims.UserID != repoOwnerID {
+		// Check if collaborator with write access
+		var perm string
+		err := h.db.QueryRow(context.Background(),
+			`SELECT permission FROM repo_collaborators WHERE repo_id = $1 AND user_id = $2`,
+			repoID, claims.UserID).Scan(&perm)
+		if err != nil || (perm != "write" && perm != "admin") {
+			writeError(w, http.StatusForbidden, "you don't have write access to this repository")
+			return
+		}
 	}
 
 	var req createFileRequest
@@ -113,7 +129,7 @@ func (h *Handler) CreateFile(w http.ResponseWriter, r *http.Request) {
 		`SELECT COALESCE(full_name, username), email FROM users WHERE id = $1`,
 		claims.UserID).Scan(&authorName, &authorEmail)
 
-	err := h.commitToRepo(repoDir, branch, authorName, authorEmail, message, func(workDir string) error {
+	err = h.commitToRepo(repoDir, branch, authorName, authorEmail, message, func(workDir string) error {
 		filePath := filepath.Join(workDir, path)
 		if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
 			return fmt.Errorf("failed to create directory: %w", err)
@@ -142,9 +158,25 @@ func (h *Handler) UpdateFile(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 	path := chi.URLParam(r, "*")
 
-	if owner != claims.Username {
-		writeError(w, http.StatusForbidden, "not your repository")
+	// Verify caller has write access
+	repoID, err := h.getRepoID(owner, name)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "repository not found")
 		return
+	}
+	var repoOwnerID int64
+	h.db.QueryRow(context.Background(),
+		`SELECT owner_id FROM repositories WHERE id = $1`, repoID).Scan(&repoOwnerID)
+	if claims.UserID != repoOwnerID {
+		// Check if collaborator with write access
+		var perm string
+		err := h.db.QueryRow(context.Background(),
+			`SELECT permission FROM repo_collaborators WHERE repo_id = $1 AND user_id = $2`,
+			repoID, claims.UserID).Scan(&perm)
+		if err != nil || (perm != "write" && perm != "admin") {
+			writeError(w, http.StatusForbidden, "you don't have write access to this repository")
+			return
+		}
 	}
 
 	var req updateFileRequest
@@ -169,7 +201,7 @@ func (h *Handler) UpdateFile(w http.ResponseWriter, r *http.Request) {
 		`SELECT COALESCE(full_name, username), email FROM users WHERE id = $1`,
 		claims.UserID).Scan(&authorName, &authorEmail)
 
-	err := h.commitToRepo(repoDir, branch, authorName, authorEmail, message, func(workDir string) error {
+	err = h.commitToRepo(repoDir, branch, authorName, authorEmail, message, func(workDir string) error {
 		filePath := filepath.Join(workDir, path)
 		return os.WriteFile(filePath, []byte(req.Content), 0o644)
 	})
@@ -188,9 +220,25 @@ func (h *Handler) DeleteFile(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 	path := chi.URLParam(r, "*")
 
-	if owner != claims.Username {
-		writeError(w, http.StatusForbidden, "not your repository")
+	// Verify caller has write access
+	repoID, err := h.getRepoID(owner, name)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "repository not found")
 		return
+	}
+	var repoOwnerID int64
+	h.db.QueryRow(context.Background(),
+		`SELECT owner_id FROM repositories WHERE id = $1`, repoID).Scan(&repoOwnerID)
+	if claims.UserID != repoOwnerID {
+		// Check if collaborator with write access
+		var perm string
+		err := h.db.QueryRow(context.Background(),
+			`SELECT permission FROM repo_collaborators WHERE repo_id = $1 AND user_id = $2`,
+			repoID, claims.UserID).Scan(&perm)
+		if err != nil || (perm != "write" && perm != "admin") {
+			writeError(w, http.StatusForbidden, "you don't have write access to this repository")
+			return
+		}
 	}
 
 	var req deleteFileRequest
@@ -215,7 +263,7 @@ func (h *Handler) DeleteFile(w http.ResponseWriter, r *http.Request) {
 		`SELECT COALESCE(full_name, username), email FROM users WHERE id = $1`,
 		claims.UserID).Scan(&authorName, &authorEmail)
 
-	err := h.commitToRepo(repoDir, branch, authorName, authorEmail, message, func(workDir string) error {
+	err = h.commitToRepo(repoDir, branch, authorName, authorEmail, message, func(workDir string) error {
 		filePath := filepath.Join(workDir, path)
 		return os.Remove(filePath)
 	})
