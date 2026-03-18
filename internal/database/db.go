@@ -346,6 +346,21 @@ func Migrate(pool *pgxpool.Pool) error {
 			UNIQUE(message_id, user_id, emoji)
 		);
 
+		CREATE TABLE IF NOT EXISTS link_previews (
+			id          BIGSERIAL PRIMARY KEY,
+			url         TEXT UNIQUE NOT NULL,
+			title       TEXT NOT NULL DEFAULT '',
+			description TEXT NOT NULL DEFAULT '',
+			image_url   TEXT NOT NULL DEFAULT '',
+			domain      TEXT NOT NULL DEFAULT '',
+			fetched_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+
+		-- Indexes for chat performance
+		CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation_id ON chat_messages(conversation_id);
+		CREATE INDEX IF NOT EXISTS idx_chat_messages_sender_id ON chat_messages(sender_id);
+		CREATE INDEX IF NOT EXISTS idx_conversation_participants_user_id ON conversation_participants(user_id);
+
 		-- Migration helpers for existing databases
 		ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT false;
 		ALTER TABLE users ADD COLUMN IF NOT EXISTS bio TEXT NOT NULL DEFAULT '';
