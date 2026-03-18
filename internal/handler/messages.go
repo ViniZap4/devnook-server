@@ -2,8 +2,10 @@ package handler
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/ViniZap4/devnook-server/internal/domain"
@@ -92,6 +94,11 @@ func (h *Handler) CreateConversation(w http.ResponseWriter, r *http.Request) {
 	if req.Type == "" {
 		req.Type = "direct"
 	}
+	validTypes := map[string]bool{"direct": true, "group": true, "repo": true, "org": true, "issue": true}
+	if !validTypes[req.Type] {
+		writeError(w, http.StatusBadRequest, "invalid conversation type")
+		return
+	}
 
 	ctx := context.Background()
 
@@ -147,13 +154,15 @@ func (h *Handler) CreateConversation(w http.ResponseWriter, r *http.Request) {
 	// Add other participants
 	for _, username := range req.Participants {
 		var uid int64
-		err := h.db.QueryRow(ctx, `SELECT id FROM users WHERE username = $1`, username).Scan(&uid)
+		err := tx.QueryRow(ctx, `SELECT id FROM users WHERE username = $1`, username).Scan(&uid)
 		if err != nil || uid == claims.UserID {
 			continue
 		}
-		tx.Exec(ctx,
+		if _, err := tx.Exec(ctx,
 			`INSERT INTO conversation_participants (conversation_id, user_id, role) VALUES ($1, $2, 'member')`,
-			convoID, uid)
+			convoID, uid); err != nil {
+			log.Printf("failed to add participant %s: %v", username, err)
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -225,9 +234,11 @@ func (h *Handler) ListMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Update last_read_at for the user
-	h.db.Exec(ctx,
+	if _, err := h.db.Exec(ctx,
 		`UPDATE conversation_participants SET last_read_at = NOW() WHERE conversation_id=$1 AND user_id=$2`,
-		convoID, claims.UserID)
+		convoID, claims.UserID); err != nil {
+		log.Printf("failed to update last_read_at for user %d in convo %d: %v", claims.UserID, convoID, err)
+	}
 
 	writeJSON(w, http.StatusOK, msgs)
 }
@@ -273,14 +284,26 @@ func (h *Handler) SendMessage(w http.ResponseWriter, r *http.Request) {
 	h.db.Exec(ctx, `UPDATE conversations SET updated_at = NOW() WHERE id = $1`, convoID)
 
 	// Broadcast via WebSocket to all participants
-	go h.broadcastChatMessage(convoID, id, claims.UserID, claims.Username, req.Content, req.Type)
+	go h.broadcastChatMessage(convoID, id, claims.UserID, claims.Username, req.Content, req.Type, req.ReplyToID)
 
 	writeJSON(w, http.StatusCreated, map[string]int64{"id": id})
 }
 
 func (h *Handler) EditMessage(w http.ResponseWriter, r *http.Request) {
 	claims := getClaims(r)
+	convoID, _ := strconv.ParseInt(chi.URLParam(r, "conversationId"), 10, 64)
 	msgID, _ := strconv.ParseInt(chi.URLParam(r, "messageId"), 10, 64)
+	ctx := context.Background()
+
+	// Verify the user is a participant
+	var participantCount int
+	h.db.QueryRow(ctx,
+		`SELECT COUNT(*) FROM conversation_participants WHERE conversation_id=$1 AND user_id=$2`,
+		convoID, claims.UserID).Scan(&participantCount)
+	if participantCount == 0 {
+		writeError(w, http.StatusForbidden, "not a participant")
+		return
+	}
 
 	var req struct {
 		Content string `json:"content"`
@@ -290,27 +313,46 @@ func (h *Handler) EditMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tag, err := h.db.Exec(context.Background(),
-		`UPDATE chat_messages SET content=$1, edited=true, updated_at=NOW() WHERE id=$2 AND sender_id=$3`,
-		req.Content, msgID, claims.UserID)
+	tag, err := h.db.Exec(ctx,
+		`UPDATE chat_messages SET content=$1, edited=true, updated_at=NOW() WHERE id=$2 AND sender_id=$3 AND conversation_id=$4`,
+		req.Content, msgID, claims.UserID, convoID)
 	if err != nil || tag.RowsAffected() == 0 {
 		writeError(w, http.StatusNotFound, "message not found or not yours")
 		return
 	}
+	go h.broadcastChatEdit(convoID, msgID, claims.UserID, req.Content)
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *Handler) DeleteMessage(w http.ResponseWriter, r *http.Request) {
 	claims := getClaims(r)
+	convoID, _ := strconv.ParseInt(chi.URLParam(r, "conversationId"), 10, 64)
 	msgID, _ := strconv.ParseInt(chi.URLParam(r, "messageId"), 10, 64)
+	ctx := context.Background()
 
-	h.db.Exec(context.Background(),
-		`DELETE FROM chat_messages WHERE id=$1 AND sender_id=$2`, msgID, claims.UserID)
+	// Verify the user is a participant
+	var participantCount int
+	h.db.QueryRow(ctx,
+		`SELECT COUNT(*) FROM conversation_participants WHERE conversation_id=$1 AND user_id=$2`,
+		convoID, claims.UserID).Scan(&participantCount)
+	if participantCount == 0 {
+		writeError(w, http.StatusForbidden, "not a participant")
+		return
+	}
+
+	tag, err := h.db.Exec(ctx,
+		`DELETE FROM chat_messages WHERE id=$1 AND sender_id=$2 AND conversation_id=$3`, msgID, claims.UserID, convoID)
+	if err != nil || tag.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "message not found or not yours")
+		return
+	}
+	go h.broadcastChatDelete(convoID, msgID, claims.UserID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *Handler) ReactToMessage(w http.ResponseWriter, r *http.Request) {
 	claims := getClaims(r)
+	convoID, _ := strconv.ParseInt(chi.URLParam(r, "conversationId"), 10, 64)
 	msgID, _ := strconv.ParseInt(chi.URLParam(r, "messageId"), 10, 64)
 
 	var req struct {
@@ -322,15 +364,30 @@ func (h *Handler) ReactToMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := context.Background()
+
+	// Verify the user is a participant
+	var participantCount int
+	h.db.QueryRow(ctx,
+		`SELECT COUNT(*) FROM conversation_participants WHERE conversation_id=$1 AND user_id=$2`,
+		convoID, claims.UserID).Scan(&participantCount)
+	if participantCount == 0 {
+		writeError(w, http.StatusForbidden, "not a participant")
+		return
+	}
+
 	// Toggle reaction: if exists remove, otherwise add
 	tag, _ := h.db.Exec(ctx,
 		`DELETE FROM message_reactions WHERE message_id=$1 AND user_id=$2 AND emoji=$3`,
 		msgID, claims.UserID, req.Emoji)
-	if tag.RowsAffected() == 0 {
+	added := tag.RowsAffected() == 0
+	if added {
 		h.db.Exec(ctx,
 			`INSERT INTO message_reactions (message_id, user_id, emoji) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
 			msgID, claims.UserID, req.Emoji)
 	}
+	var username string
+	h.db.QueryRow(ctx, `SELECT username FROM users WHERE id = $1`, claims.UserID).Scan(&username)
+	go h.broadcastChatReact(convoID, msgID, claims.UserID, username, req.Emoji, added)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -431,12 +488,16 @@ func (h *Handler) getMessageReactions(ctx context.Context, msgID, userID int64) 
 	return reactions
 }
 
-func (h *Handler) broadcastChatMessage(convoID, msgID, senderID int64, senderUsername, content, msgType string) {
+func (h *Handler) broadcastChatMessage(convoID, msgID, senderID int64, senderUsername, content, msgType string, replyToID *int64) {
 	ctx := context.Background()
 
 	// Get sender full name
 	var senderFullName string
 	h.db.QueryRow(ctx, `SELECT full_name FROM users WHERE id = $1`, senderID).Scan(&senderFullName)
+
+	// Fetch actual created_at from the DB instead of using time.Now()
+	var createdAt time.Time
+	h.db.QueryRow(ctx, `SELECT created_at FROM chat_messages WHERE id = $1`, msgID).Scan(&createdAt)
 
 	// Get all participant user IDs
 	rows, err := h.db.Query(ctx,
@@ -462,9 +523,10 @@ func (h *Handler) broadcastChatMessage(convoID, msgID, senderID int64, senderUse
 		SenderFullName: senderFullName,
 		Content:        content,
 		Type:           msgType,
+		ReplyToID:      replyToID,
 		Reactions:      []domain.MessageReaction{},
-		CreatedAt:      time.Now(),
-		UpdatedAt:      time.Now(),
+		CreatedAt:      createdAt,
+		UpdatedAt:      createdAt,
 	}
 
 	h.hub.SendToUsers(participantIDs, ws.Event{
@@ -486,4 +548,379 @@ func (h *Handler) broadcastChatMessage(convoID, msgID, senderID int64, senderUse
 			},
 		})
 	}
+}
+
+func (h *Handler) broadcastChatEdit(convoID, msgID, senderID int64, newContent string) {
+	ctx := context.Background()
+
+	// Fetch actual updated_at from the DB instead of using time.Now()
+	var updatedAt time.Time
+	if err := h.db.QueryRow(ctx, `SELECT updated_at FROM chat_messages WHERE id=$1`, msgID).Scan(&updatedAt); err != nil {
+		updatedAt = time.Now()
+	}
+
+	rows, err := h.db.Query(ctx,
+		`SELECT user_id FROM conversation_participants WHERE conversation_id = $1`, convoID)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	var participantIDs []int64
+	for rows.Next() {
+		var uid int64
+		if err := rows.Scan(&uid); err == nil {
+			participantIDs = append(participantIDs, uid)
+		}
+	}
+
+	h.hub.SendToUsers(participantIDs, ws.Event{
+		Type: "chat_message_edit",
+		Data: map[string]any{
+			"id":              msgID,
+			"conversation_id": convoID,
+			"content":         newContent,
+			"sender_id":       senderID,
+			"edited":          true,
+			"updated_at":      updatedAt,
+		},
+	})
+}
+
+func (h *Handler) broadcastChatDelete(convoID, msgID, senderID int64) {
+	ctx := context.Background()
+	rows, err := h.db.Query(ctx,
+		`SELECT user_id FROM conversation_participants WHERE conversation_id = $1`, convoID)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	var participantIDs []int64
+	for rows.Next() {
+		var uid int64
+		if err := rows.Scan(&uid); err == nil {
+			participantIDs = append(participantIDs, uid)
+		}
+	}
+
+	h.hub.SendToUsers(participantIDs, ws.Event{
+		Type: "chat_message_delete",
+		Data: map[string]any{
+			"id":              msgID,
+			"conversation_id": convoID,
+			"sender_id":       senderID,
+		},
+	})
+}
+
+func (h *Handler) broadcastChatReact(convoID, msgID, userID int64, username, emoji string, added bool) {
+	ctx := context.Background()
+	rows, err := h.db.Query(ctx,
+		`SELECT user_id FROM conversation_participants WHERE conversation_id = $1`, convoID)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	var participantIDs []int64
+	for rows.Next() {
+		var uid int64
+		if err := rows.Scan(&uid); err == nil {
+			participantIDs = append(participantIDs, uid)
+		}
+	}
+
+	h.hub.SendToUsers(participantIDs, ws.Event{
+		Type: "chat_message_react",
+		Data: map[string]any{
+			"message_id":      msgID,
+			"conversation_id": convoID,
+			"user_id":         userID,
+			"username":        username,
+			"emoji":           emoji,
+			"added":           added,
+		},
+	})
+}
+
+func (h *Handler) InitiateCall(w http.ResponseWriter, r *http.Request) {
+	claims := getClaims(r)
+	convoID, _ := strconv.ParseInt(chi.URLParam(r, "conversationId"), 10, 64)
+	ctx := context.Background()
+
+	// Verify the user is a participant
+	var count int
+	h.db.QueryRow(ctx,
+		`SELECT COUNT(*) FROM conversation_participants WHERE conversation_id=$1 AND user_id=$2`,
+		convoID, claims.UserID).Scan(&count)
+	if count == 0 {
+		writeError(w, http.StatusForbidden, "not a participant")
+		return
+	}
+
+	// Get all participant IDs except the caller
+	rows, err := h.db.Query(ctx,
+		`SELECT user_id FROM conversation_participants WHERE conversation_id = $1 AND user_id != $2`,
+		convoID, claims.UserID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get participants")
+		return
+	}
+	defer rows.Close()
+
+	var participantIDs []int64
+	for rows.Next() {
+		var uid int64
+		if err := rows.Scan(&uid); err == nil {
+			participantIDs = append(participantIDs, uid)
+		}
+	}
+
+	// Broadcast call_initiate event to other participants
+	h.hub.SendToUsers(participantIDs, ws.Event{
+		Type: "call_initiate",
+		Data: map[string]any{
+			"conversation_id": convoID,
+			"caller_id":       claims.UserID,
+			"caller_username": claims.Username,
+		},
+	})
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "initiated"})
+}
+
+func (h *Handler) TypingIndicator(w http.ResponseWriter, r *http.Request) {
+	claims := getClaims(r)
+	convoID, _ := strconv.ParseInt(chi.URLParam(r, "conversationId"), 10, 64)
+	ctx := context.Background()
+
+	// Verify the user is a participant
+	var count int
+	h.db.QueryRow(ctx,
+		`SELECT COUNT(*) FROM conversation_participants WHERE conversation_id=$1 AND user_id=$2`,
+		convoID, claims.UserID).Scan(&count)
+	if count == 0 {
+		writeError(w, http.StatusForbidden, "not a participant")
+		return
+	}
+
+	// Get all participant IDs except the sender
+	rows, err := h.db.Query(ctx,
+		`SELECT user_id FROM conversation_participants WHERE conversation_id = $1 AND user_id != $2`,
+		convoID, claims.UserID)
+	if err != nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	defer rows.Close()
+
+	var participantIDs []int64
+	for rows.Next() {
+		var uid int64
+		if err := rows.Scan(&uid); err == nil {
+			participantIDs = append(participantIDs, uid)
+		}
+	}
+
+	h.hub.SendToUsers(participantIDs, ws.Event{
+		Type: "chat_typing",
+		Data: map[string]any{
+			"conversation_id": convoID,
+			"user_id":         claims.UserID,
+			"username":        claims.Username,
+		},
+	})
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) MarkConversationRead(w http.ResponseWriter, r *http.Request) {
+	claims := getClaims(r)
+	convoID, _ := strconv.ParseInt(chi.URLParam(r, "conversationId"), 10, 64)
+	ctx := context.Background()
+
+	tag, err := h.db.Exec(ctx,
+		`UPDATE conversation_participants SET last_read_at = NOW() WHERE conversation_id=$1 AND user_id=$2`,
+		convoID, claims.UserID)
+	if err != nil || tag.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "not a participant")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) AddParticipant(w http.ResponseWriter, r *http.Request) {
+	claims := getClaims(r)
+	convoID, _ := strconv.ParseInt(chi.URLParam(r, "conversationId"), 10, 64)
+	ctx := context.Background()
+
+	// Verify the requester is a participant
+	var count int
+	h.db.QueryRow(ctx,
+		`SELECT COUNT(*) FROM conversation_participants WHERE conversation_id=$1 AND user_id=$2`,
+		convoID, claims.UserID).Scan(&count)
+	if count == 0 {
+		writeError(w, http.StatusForbidden, "not a participant")
+		return
+	}
+
+	// Prevent adding participants to direct conversations
+	var convoType string
+	h.db.QueryRow(ctx, `SELECT type FROM conversations WHERE id = $1`, convoID).Scan(&convoType)
+	if convoType == "direct" {
+		writeError(w, http.StatusBadRequest, "cannot add participants to direct conversations")
+		return
+	}
+
+	var req struct {
+		Username string `json:"username"`
+	}
+	if err := readJSON(r, &req); err != nil || req.Username == "" {
+		writeError(w, http.StatusBadRequest, "username is required")
+		return
+	}
+
+	var uid int64
+	err := h.db.QueryRow(ctx, `SELECT id FROM users WHERE username = $1`, req.Username).Scan(&uid)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "user not found")
+		return
+	}
+
+	_, err = h.db.Exec(ctx,
+		`INSERT INTO conversation_participants (conversation_id, user_id, role) VALUES ($1, $2, 'member') ON CONFLICT DO NOTHING`,
+		convoID, uid)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to add participant")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) RemoveParticipant(w http.ResponseWriter, r *http.Request) {
+	claims := getClaims(r)
+	convoID, _ := strconv.ParseInt(chi.URLParam(r, "conversationId"), 10, 64)
+	username := chi.URLParam(r, "username")
+	ctx := context.Background()
+
+	// Verify the requester is a participant and get their role
+	var requesterRole string
+	err := h.db.QueryRow(ctx,
+		`SELECT role FROM conversation_participants WHERE conversation_id=$1 AND user_id=$2`,
+		convoID, claims.UserID).Scan(&requesterRole)
+	if err != nil {
+		writeError(w, http.StatusForbidden, "not a participant")
+		return
+	}
+
+	// Get target user ID
+	var targetID int64
+	err = h.db.QueryRow(ctx, `SELECT id FROM users WHERE username = $1`, username).Scan(&targetID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "user not found")
+		return
+	}
+
+	// Users can remove themselves; otherwise must be owner
+	if targetID != claims.UserID && requesterRole != "owner" {
+		writeError(w, http.StatusForbidden, "only the owner can remove other participants")
+		return
+	}
+
+	_, err = h.db.Exec(ctx,
+		`DELETE FROM conversation_participants WHERE conversation_id=$1 AND user_id=$2`,
+		convoID, targetID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to remove participant")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) DeleteConversation(w http.ResponseWriter, r *http.Request) {
+	claims := getClaims(r)
+	convoID, _ := strconv.ParseInt(chi.URLParam(r, "conversationId"), 10, 64)
+	ctx := context.Background()
+
+	// Only the owner can delete a conversation
+	var role string
+	err := h.db.QueryRow(ctx,
+		`SELECT role FROM conversation_participants WHERE conversation_id=$1 AND user_id=$2`,
+		convoID, claims.UserID).Scan(&role)
+	if err != nil {
+		writeError(w, http.StatusForbidden, "not a participant")
+		return
+	}
+	if role != "owner" {
+		writeError(w, http.StatusForbidden, "only the owner can delete the conversation")
+		return
+	}
+
+	// Delete cascade should handle messages, participants, reactions
+	_, err = h.db.Exec(ctx, `DELETE FROM conversations WHERE id = $1`, convoID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete conversation")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) SearchMessages(w http.ResponseWriter, r *http.Request) {
+	claims := getClaims(r)
+	convoID, _ := strconv.ParseInt(chi.URLParam(r, "conversationId"), 10, 64)
+	query := r.URL.Query().Get("q")
+	ctx := context.Background()
+
+	if query == "" || len(query) < 2 {
+		writeJSON(w, http.StatusOK, []domain.Message{})
+		return
+	}
+	// Escape ILIKE wildcards to prevent pattern injection
+	query = strings.NewReplacer("%", "\\%", "_", "\\_").Replace(query)
+
+	// Verify participant
+	var count int
+	h.db.QueryRow(ctx,
+		`SELECT COUNT(*) FROM conversation_participants WHERE conversation_id=$1 AND user_id=$2`,
+		convoID, claims.UserID).Scan(&count)
+	if count == 0 {
+		writeError(w, http.StatusForbidden, "not a participant")
+		return
+	}
+
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if limit <= 0 || limit > 50 {
+		limit = 20
+	}
+
+	rows, err := h.db.Query(ctx,
+		`SELECT m.id, m.conversation_id, m.sender_id, u.username, u.full_name,
+		        m.content, m.type, m.reply_to_id, m.edited, m.created_at, m.updated_at
+		 FROM chat_messages m
+		 JOIN users u ON u.id = m.sender_id
+		 WHERE m.conversation_id = $1 AND m.content ILIKE '%' || $2 || '%'
+		 ORDER BY m.created_at DESC LIMIT $3`,
+		convoID, query, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "search failed")
+		return
+	}
+	defer rows.Close()
+
+	msgs := []domain.Message{}
+	for rows.Next() {
+		var m domain.Message
+		if err := rows.Scan(&m.ID, &m.ConversationID, &m.SenderID, &m.SenderUsername, &m.SenderFullName,
+			&m.Content, &m.Type, &m.ReplyToID, &m.Edited, &m.CreatedAt, &m.UpdatedAt); err != nil {
+			continue
+		}
+		m.Reactions = h.getMessageReactions(ctx, m.ID, claims.UserID)
+		msgs = append(msgs, m)
+	}
+
+	writeJSON(w, http.StatusOK, msgs)
 }

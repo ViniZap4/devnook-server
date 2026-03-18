@@ -254,7 +254,15 @@ func main() {
 		r.Put("/messages/conversations/{conversationId}/messages/{messageId}", h.EditMessage)
 		r.Delete("/messages/conversations/{conversationId}/messages/{messageId}", h.DeleteMessage)
 		r.Post("/messages/conversations/{conversationId}/messages/{messageId}/react", h.ReactToMessage)
+		r.Post("/messages/conversations/{conversationId}/typing", h.TypingIndicator)
 		r.Get("/messages/unread", h.UnreadMessageCount)
+		r.Post("/messages/conversations/{conversationId}/call", h.InitiateCall)
+		r.Delete("/messages/conversations/{conversationId}", h.DeleteConversation)
+		r.Post("/messages/conversations/{conversationId}/read", h.MarkConversationRead)
+		r.Get("/messages/conversations/{conversationId}/search", h.SearchMessages)
+		r.Post("/messages/conversations/{conversationId}/participants", h.AddParticipant)
+		r.Delete("/messages/conversations/{conversationId}/participants/{username}", h.RemoveParticipant)
+		r.Get("/links/preview", h.GetLinkPreview)
 
 		// Shortcuts
 		r.Get("/shortcuts", h.ListShortcuts)
@@ -291,7 +299,7 @@ func main() {
 			http.Error(w, "invalid token", http.StatusUnauthorized)
 			return
 		}
-		hub.HandleWebSocket(w, r, claims.UserID)
+		hub.HandleWebSocket(w, r, claims.UserID, claims.Username)
 	})
 
 	port := cfg.Port
