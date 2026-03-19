@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ViniZap4/devnook-server/internal/domain"
 	"github.com/go-chi/chi/v5"
@@ -14,6 +15,10 @@ import (
 type createIssueRequest struct {
 	Title       string  `json:"title"`
 	Body        string  `json:"body"`
+	Priority    string  `json:"priority"`
+	Type        string  `json:"type"`
+	DueDate     *string `json:"due_date,omitempty"`
+	StoryPoints int     `json:"story_points"`
 	MilestoneID *int64  `json:"milestone_id,omitempty"`
 	AssigneeID  *int64  `json:"assignee_id,omitempty"`
 	LabelIDs    []int64 `json:"label_ids,omitempty"`
@@ -23,6 +28,10 @@ type updateIssueRequest struct {
 	Title       *string `json:"title,omitempty"`
 	Body        *string `json:"body,omitempty"`
 	State       *string `json:"state,omitempty"`
+	Priority    *string `json:"priority,omitempty"`
+	Type        *string `json:"type,omitempty"`
+	DueDate     *string `json:"due_date,omitempty"`
+	StoryPoints *int    `json:"story_points,omitempty"`
 	MilestoneID *int64  `json:"milestone_id,omitempty"`
 	AssigneeID  *int64  `json:"assignee_id,omitempty"`
 }
@@ -107,6 +116,8 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 	milestoneFilter := r.URL.Query().Get("milestone")
 	assigneeFilter := r.URL.Query().Get("assignee")
 	q := r.URL.Query().Get("q")
+	sortParam := r.URL.Query().Get("sort")
+	direction := r.URL.Query().Get("direction")
 
 	// Build dynamic query
 	conditions := []string{"i.repo_id = $1"}
@@ -155,15 +166,40 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 		argIdx++
 	}
 
+	// Build ORDER BY clause
+	dir := "DESC"
+	if strings.ToLower(direction) == "asc" {
+		dir = "ASC"
+	}
+	var orderBy string
+	switch sortParam {
+	case "updated":
+		orderBy = "i.updated_at " + dir
+	case "priority":
+		// Map priority text to numeric order: critical > high > medium > low > none
+		orderBy = fmt.Sprintf(`CASE i.priority
+			WHEN 'critical' THEN 0
+			WHEN 'high'     THEN 1
+			WHEN 'medium'   THEN 2
+			WHEN 'low'      THEN 3
+			ELSE 4
+		END %s`, dir)
+	case "comments":
+		orderBy = fmt.Sprintf(`(SELECT COUNT(*) FROM issue_comments ic WHERE ic.issue_id = i.id) %s`, dir)
+	default: // "created" or empty
+		orderBy = "i.created_at " + dir
+	}
+
 	query := fmt.Sprintf(
 		`SELECT i.id, i.repo_id, i.number, i.author_id, u.username, i.title, i.body, i.state,
+		        i.priority, i.type, i.due_date, i.story_points,
 		        i.milestone_id, i.assignee_id, au.username, i.created_at, i.updated_at
 		 FROM issues i
 		 JOIN users u ON u.id = i.author_id
 		 LEFT JOIN users au ON au.id = i.assignee_id
 		 WHERE %s
-		 ORDER BY i.created_at DESC`,
-		strings.Join(conditions, " AND "))
+		 ORDER BY %s`,
+		strings.Join(conditions, " AND "), orderBy)
 
 	rows, err := h.db.Query(context.Background(), query, args...)
 	if err != nil {
@@ -178,6 +214,7 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 		var issue domain.Issue
 		if err := rows.Scan(&issue.ID, &issue.RepoID, &issue.Number, &issue.AuthorID, &issue.Author,
 			&issue.Title, &issue.Body, &issue.State,
+			&issue.Priority, &issue.Type, &issue.DueDate, &issue.StoryPoints,
 			&issue.MilestoneID, &issue.AssigneeID, &issue.Assignee,
 			&issue.CreatedAt, &issue.UpdatedAt); err != nil {
 			continue
@@ -223,6 +260,25 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "title is required")
 		return
 	}
+	if req.Priority == "" {
+		req.Priority = "medium"
+	}
+	if req.Type == "" {
+		req.Type = "task"
+	}
+
+	var dueDate *time.Time
+	if req.DueDate != nil && *req.DueDate != "" {
+		t, err := time.Parse(time.RFC3339, *req.DueDate)
+		if err != nil {
+			t, err = time.Parse("2006-01-02", *req.DueDate)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "invalid due_date format")
+				return
+			}
+		}
+		dueDate = &t
+	}
 
 	ctx := context.Background()
 	tx, err := h.db.Begin(ctx)
@@ -243,9 +299,9 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 
 	var issueID int64
 	err = tx.QueryRow(ctx,
-		`INSERT INTO issues (repo_id, number, author_id, title, body, milestone_id, assignee_id)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
-		repoID, number, claims.UserID, req.Title, req.Body, req.MilestoneID, req.AssigneeID,
+		`INSERT INTO issues (repo_id, number, author_id, title, body, priority, type, due_date, story_points, milestone_id, assignee_id)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id`,
+		repoID, number, claims.UserID, req.Title, req.Body, req.Priority, req.Type, dueDate, req.StoryPoints, req.MilestoneID, req.AssigneeID,
 	).Scan(&issueID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create issue")
@@ -285,6 +341,7 @@ func (h *Handler) GetIssue(w http.ResponseWriter, r *http.Request) {
 	var issue domain.Issue
 	err = h.db.QueryRow(context.Background(),
 		`SELECT i.id, i.repo_id, i.number, i.author_id, u.username, i.title, i.body, i.state,
+		        i.priority, i.type, i.due_date, i.story_points,
 		        i.milestone_id, i.assignee_id, au.username, i.created_at, i.updated_at
 		 FROM issues i
 		 JOIN users u ON u.id = i.author_id
@@ -292,6 +349,7 @@ func (h *Handler) GetIssue(w http.ResponseWriter, r *http.Request) {
 		 WHERE i.repo_id = $1 AND i.number = $2`, repoID, number,
 	).Scan(&issue.ID, &issue.RepoID, &issue.Number, &issue.AuthorID, &issue.Author,
 		&issue.Title, &issue.Body, &issue.State,
+		&issue.Priority, &issue.Type, &issue.DueDate, &issue.StoryPoints,
 		&issue.MilestoneID, &issue.AssigneeID, &issue.Assignee,
 		&issue.CreatedAt, &issue.UpdatedAt)
 	if err != nil {
@@ -366,6 +424,38 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	if req.State != nil {
 		sets = append(sets, fmt.Sprintf("state=$%d", argN))
 		args = append(args, *req.State)
+		argN++
+	}
+	if req.Priority != nil {
+		sets = append(sets, fmt.Sprintf("priority=$%d", argN))
+		args = append(args, *req.Priority)
+		argN++
+	}
+	if req.Type != nil {
+		sets = append(sets, fmt.Sprintf("type=$%d", argN))
+		args = append(args, *req.Type)
+		argN++
+	}
+	if req.DueDate != nil {
+		if *req.DueDate == "" {
+			sets = append(sets, "due_date=NULL")
+		} else {
+			t, err := time.Parse(time.RFC3339, *req.DueDate)
+			if err != nil {
+				t, err = time.Parse("2006-01-02", *req.DueDate)
+				if err != nil {
+					writeError(w, http.StatusBadRequest, "invalid due_date format")
+					return
+				}
+			}
+			sets = append(sets, fmt.Sprintf("due_date=$%d", argN))
+			args = append(args, t)
+			argN++
+		}
+	}
+	if req.StoryPoints != nil {
+		sets = append(sets, fmt.Sprintf("story_points=$%d", argN))
+		args = append(args, *req.StoryPoints)
 		argN++
 	}
 	if req.MilestoneID != nil {
@@ -536,4 +626,94 @@ func (h *Handler) DeleteIssueComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+type addIssueToProjectRequest struct {
+	ProjectSlug string `json:"project_slug"`
+	ColumnID    int64  `json:"column_id"`
+}
+
+// AddIssueToProject creates a project_item linked to an existing issue.
+// Route: POST /repos/{owner}/{name}/issues/{number}/add-to-project
+func (h *Handler) AddIssueToProject(w http.ResponseWriter, r *http.Request) {
+	claims := getClaims(r)
+	owner := chi.URLParam(r, "owner")
+	name := chi.URLParam(r, "name")
+	number, err := strconv.Atoi(chi.URLParam(r, "number"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid issue number")
+		return
+	}
+
+	var req addIssueToProjectRequest
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.ProjectSlug == "" {
+		writeError(w, http.StatusBadRequest, "project_slug is required")
+		return
+	}
+	if req.ColumnID == 0 {
+		writeError(w, http.StatusBadRequest, "column_id is required")
+		return
+	}
+
+	ctx := context.Background()
+
+	// Look up issue
+	repoID, err := h.getRepoID(owner, name)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "repository not found")
+		return
+	}
+
+	var issue domain.Issue
+	err = h.db.QueryRow(ctx,
+		`SELECT id, title, type, priority, story_points FROM issues WHERE repo_id = $1 AND number = $2`,
+		repoID, number,
+	).Scan(&issue.ID, &issue.Title, &issue.Type, &issue.Priority, &issue.StoryPoints)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "issue not found")
+		return
+	}
+
+	// Look up project by slug, verifying the caller is a member
+	project, err := h.getProjectFull(req.ProjectSlug, claims.UserID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "project not found or access denied")
+		return
+	}
+
+	// Require at least member role (not viewer) to add items
+	if !h.requireProjectRole(w, project.ID, claims.UserID, "owner", "admin", "member") {
+		return
+	}
+
+	// Verify the column belongs to this project
+	var colExists bool
+	_ = h.db.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM project_columns WHERE id = $1 AND project_id = $2)`,
+		req.ColumnID, project.ID,
+	).Scan(&colExists)
+	if !colExists {
+		writeError(w, http.StatusBadRequest, "column does not belong to this project")
+		return
+	}
+
+	var itemID int64
+	err = h.db.QueryRow(ctx,
+		`INSERT INTO project_items
+		   (project_id, column_id, issue_id, title, type, priority, story_points, position)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7,
+		         COALESCE((SELECT MAX(position) FROM project_items WHERE column_id = $2), 0) + 1)
+		 RETURNING id`,
+		project.ID, req.ColumnID, issue.ID, issue.Title, issue.Type, issue.Priority, issue.StoryPoints,
+	).Scan(&itemID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to add issue to project")
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]any{"id": itemID})
 }

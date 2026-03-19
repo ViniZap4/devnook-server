@@ -206,6 +206,7 @@ func main() {
 		r.Delete("/repos/{owner}/{name}/issues/{number}/comments/{id}", h.DeleteIssueComment)
 		r.Post("/repos/{owner}/{name}/issues/{number}/labels", h.AddIssueLabel)
 		r.Delete("/repos/{owner}/{name}/issues/{number}/labels/{labelId}", h.RemoveIssueLabel)
+		r.Post("/repos/{owner}/{name}/issues/{number}/add-to-project", h.AddIssueToProject)
 
 		// Pull Requests
 		r.Get("/repos/{owner}/{name}/pulls", h.ListPullRequests)
