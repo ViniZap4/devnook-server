@@ -56,6 +56,23 @@ func parseOptionalDate(s *string) (*time.Time, error) {
 	return &t, nil
 }
 
+// requireProjectRole checks that userID holds one of the allowed roles in projectID.
+// It writes a 403 response and returns false if the check fails.
+func (h *Handler) requireProjectRole(w http.ResponseWriter, projectID, userID int64, allowed ...string) bool {
+	role, err := h.getProjectRole(context.Background(), projectID, userID)
+	if err != nil {
+		writeError(w, http.StatusForbidden, "access denied")
+		return false
+	}
+	for _, a := range allowed {
+		if role == a {
+			return true
+		}
+	}
+	writeError(w, http.StatusForbidden, "insufficient permissions")
+	return false
+}
+
 // getProjectFull looks up a project by slug, verifying the caller is a member.
 // Returns the full Project domain object.
 func (h *Handler) getProjectFull(slug string, userID int64) (domain.Project, error) {
@@ -183,6 +200,10 @@ func (h *Handler) CreateProjectItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !h.requireProjectRole(w, project.ID, claims.UserID, "owner", "admin", "member") {
+		return
+	}
+
 	var req createItemRequest
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -280,6 +301,10 @@ func (h *Handler) UpdateProjectItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !h.requireProjectRole(w, project.ID, claims.UserID, "owner", "admin", "member") {
+		return
+	}
+
 	var req updateItemRequest
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -374,6 +399,10 @@ func (h *Handler) DeleteProjectItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !h.requireProjectRole(w, project.ID, claims.UserID, "owner", "admin") {
+		return
+	}
+
 	tag, err := h.db.Exec(context.Background(),
 		`DELETE FROM project_items WHERE id = $1 AND project_id = $2`,
 		itemID, project.ID,
@@ -403,6 +432,10 @@ func (h *Handler) MoveProjectItem(w http.ResponseWriter, r *http.Request) {
 	project, err := h.getProjectFull(slug, claims.UserID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+
+	if !h.requireProjectRole(w, project.ID, claims.UserID, "owner", "admin", "member") {
 		return
 	}
 
