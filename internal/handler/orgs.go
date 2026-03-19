@@ -91,7 +91,7 @@ func (h *Handler) CreateOrg(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) ListOrgs(w http.ResponseWriter, r *http.Request) {
 	claims := getClaims(r)
 	rows, err := h.db.Query(context.Background(),
-		`SELECT o.id, o.name, o.display_name, o.description, o.avatar_url, o.created_at, o.updated_at
+		`SELECT o.id, o.name, o.display_name, o.description, o.avatar_url, o.location, o.website, o.created_at, o.updated_at
 		 FROM organizations o
 		 JOIN org_members m ON m.org_id = o.id
 		 WHERE m.user_id = $1
@@ -105,7 +105,7 @@ func (h *Handler) ListOrgs(w http.ResponseWriter, r *http.Request) {
 	var orgs []domain.Organization
 	for rows.Next() {
 		var o domain.Organization
-		if err := rows.Scan(&o.ID, &o.Name, &o.DisplayName, &o.Description, &o.AvatarURL, &o.CreatedAt, &o.UpdatedAt); err != nil {
+		if err := rows.Scan(&o.ID, &o.Name, &o.DisplayName, &o.Description, &o.AvatarURL, &o.Location, &o.Website, &o.CreatedAt, &o.UpdatedAt); err != nil {
 			continue
 		}
 		orgs = append(orgs, o)
@@ -120,9 +120,9 @@ func (h *Handler) GetOrg(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 	var o domain.Organization
 	err := h.db.QueryRow(context.Background(),
-		`SELECT id, name, display_name, description, avatar_url, created_at, updated_at
+		`SELECT id, name, display_name, description, avatar_url, location, website, created_at, updated_at
 		 FROM organizations WHERE name = $1`, name,
-	).Scan(&o.ID, &o.Name, &o.DisplayName, &o.Description, &o.AvatarURL, &o.CreatedAt, &o.UpdatedAt)
+	).Scan(&o.ID, &o.Name, &o.DisplayName, &o.Description, &o.AvatarURL, &o.Location, &o.Website, &o.CreatedAt, &o.UpdatedAt)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "organization not found")
 		return
@@ -177,7 +177,7 @@ func (h *Handler) DeleteOrg(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) ListOrgMembers(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 	rows, err := h.db.Query(context.Background(),
-		`SELECT m.id, m.org_id, m.user_id, u.username, m.role, m.joined_at
+		`SELECT m.id, m.org_id, m.user_id, u.username, u.full_name, m.role, m.joined_at
 		 FROM org_members m
 		 JOIN users u ON u.id = m.user_id
 		 JOIN organizations o ON o.id = m.org_id
@@ -192,7 +192,7 @@ func (h *Handler) ListOrgMembers(w http.ResponseWriter, r *http.Request) {
 	var members []domain.OrgMember
 	for rows.Next() {
 		var m domain.OrgMember
-		if err := rows.Scan(&m.ID, &m.OrgID, &m.UserID, &m.Username, &m.Role, &m.JoinedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.OrgID, &m.UserID, &m.Username, &m.FullName, &m.Role, &m.JoinedAt); err != nil {
 			continue
 		}
 		members = append(members, m)

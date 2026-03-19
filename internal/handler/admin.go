@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ViniZap4/devnook-server/internal/domain"
 	"github.com/go-chi/chi/v5"
@@ -286,7 +287,7 @@ func (h *Handler) AdminListOrgs(w http.ResponseWriter, r *http.Request) {
 
 	ctx := context.Background()
 	rows, err := h.db.Query(ctx,
-		`SELECT id, name, display_name, description, avatar_url, created_at, updated_at
+		`SELECT id, name, display_name, description, avatar_url, location, website, created_at, updated_at
 		 FROM organizations ORDER BY created_at DESC`)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list organizations")
@@ -298,7 +299,7 @@ func (h *Handler) AdminListOrgs(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var o domain.Organization
 		if err := rows.Scan(&o.ID, &o.Name, &o.DisplayName, &o.Description, &o.AvatarURL,
-			&o.CreatedAt, &o.UpdatedAt); err != nil {
+			&o.Location, &o.Website, &o.CreatedAt, &o.UpdatedAt); err != nil {
 			continue
 		}
 		orgs = append(orgs, o)
@@ -307,4 +308,111 @@ func (h *Handler) AdminListOrgs(w http.ResponseWriter, r *http.Request) {
 		orgs = []domain.Organization{}
 	}
 	writeJSON(w, http.StatusOK, orgs)
+}
+
+func (h *Handler) AdminAnalytics(w http.ResponseWriter, r *http.Request) {
+	if !h.requireAdmin(w, r) {
+		return
+	}
+
+	ctx := context.Background()
+	days := 30
+
+	// User signups per day (last 30 days)
+	userRows, err := h.db.Query(ctx,
+		`SELECT DATE(created_at) AS day, COUNT(*) AS count
+		 FROM users
+		 WHERE created_at >= NOW() - INTERVAL '1 day' * $1
+		 GROUP BY day ORDER BY day`, days)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get analytics")
+		return
+	}
+	defer userRows.Close()
+
+	type dayCount struct {
+		Day   string `json:"day"`
+		Count int    `json:"count"`
+	}
+
+	var userGrowth []dayCount
+	for userRows.Next() {
+		var dc dayCount
+		var day time.Time
+		if err := userRows.Scan(&day, &dc.Count); err != nil {
+			continue
+		}
+		dc.Day = day.Format("2006-01-02")
+		userGrowth = append(userGrowth, dc)
+	}
+	if userGrowth == nil {
+		userGrowth = []dayCount{}
+	}
+
+	// Repo creations per day
+	repoRows, err := h.db.Query(ctx,
+		`SELECT DATE(created_at) AS day, COUNT(*) AS count
+		 FROM repositories
+		 WHERE created_at >= NOW() - INTERVAL '1 day' * $1
+		 GROUP BY day ORDER BY day`, days)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get analytics")
+		return
+	}
+	defer repoRows.Close()
+
+	var repoGrowth []dayCount
+	for repoRows.Next() {
+		var dc dayCount
+		var day time.Time
+		if err := repoRows.Scan(&day, &dc.Count); err != nil {
+			continue
+		}
+		dc.Day = day.Format("2006-01-02")
+		repoGrowth = append(repoGrowth, dc)
+	}
+	if repoGrowth == nil {
+		repoGrowth = []dayCount{}
+	}
+
+	// Issues created per day
+	issueRows, err := h.db.Query(ctx,
+		`SELECT DATE(created_at) AS day, COUNT(*) AS count
+		 FROM issues
+		 WHERE created_at >= NOW() - INTERVAL '1 day' * $1
+		 GROUP BY day ORDER BY day`, days)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get analytics")
+		return
+	}
+	defer issueRows.Close()
+
+	var issueGrowth []dayCount
+	for issueRows.Next() {
+		var dc dayCount
+		var day time.Time
+		if err := issueRows.Scan(&day, &dc.Count); err != nil {
+			continue
+		}
+		dc.Day = day.Format("2006-01-02")
+		issueGrowth = append(issueGrowth, dc)
+	}
+	if issueGrowth == nil {
+		issueGrowth = []dayCount{}
+	}
+
+	// Recent admin-relevant counts
+	var activeToday, newThisWeek, newThisMonth int
+	h.db.QueryRow(ctx, `SELECT COUNT(*) FROM users WHERE updated_at >= NOW() - INTERVAL '1 day'`).Scan(&activeToday)
+	h.db.QueryRow(ctx, `SELECT COUNT(*) FROM users WHERE created_at >= NOW() - INTERVAL '7 days'`).Scan(&newThisWeek)
+	h.db.QueryRow(ctx, `SELECT COUNT(*) FROM users WHERE created_at >= NOW() - INTERVAL '30 days'`).Scan(&newThisMonth)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"user_growth":    userGrowth,
+		"repo_growth":    repoGrowth,
+		"issue_growth":   issueGrowth,
+		"active_today":   activeToday,
+		"new_this_week":  newThisWeek,
+		"new_this_month": newThisMonth,
+	})
 }
