@@ -356,10 +356,197 @@ func Migrate(pool *pgxpool.Pool) error {
 			fetched_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		);
 
+		CREATE TABLE IF NOT EXISTS doc_spaces (
+			id          BIGSERIAL PRIMARY KEY,
+			name        TEXT NOT NULL,
+			slug        TEXT UNIQUE NOT NULL,
+			description TEXT NOT NULL DEFAULT '',
+			icon        TEXT NOT NULL DEFAULT '',
+			owner_type  TEXT NOT NULL DEFAULT 'user',
+			owner_id    BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			owner_name  TEXT NOT NULL DEFAULT '',
+			repo_owner  TEXT,
+			repo_name   TEXT,
+			org_name    TEXT,
+			is_public   BOOLEAN NOT NULL DEFAULT false,
+			created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+
+		CREATE TABLE IF NOT EXISTS doc_pages (
+			id              BIGSERIAL PRIMARY KEY,
+			space_id        BIGINT NOT NULL REFERENCES doc_spaces(id) ON DELETE CASCADE,
+			parent_id       BIGINT REFERENCES doc_pages(id) ON DELETE SET NULL,
+			title           TEXT NOT NULL,
+			slug            TEXT NOT NULL,
+			content         TEXT NOT NULL DEFAULT '',
+			icon            TEXT NOT NULL DEFAULT '',
+			author_id       BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			last_edited_by  BIGINT REFERENCES users(id) ON DELETE SET NULL,
+			position        INT NOT NULL DEFAULT 0,
+			is_published    BOOLEAN NOT NULL DEFAULT true,
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			UNIQUE(space_id, slug)
+		);
+
+		CREATE TABLE IF NOT EXISTS doc_page_versions (
+			id          BIGSERIAL PRIMARY KEY,
+			page_id     BIGINT NOT NULL REFERENCES doc_pages(id) ON DELETE CASCADE,
+			title       TEXT NOT NULL,
+			content     TEXT NOT NULL,
+			author_id   BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			commit_hash TEXT,
+			created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+
+		CREATE TABLE IF NOT EXISTS projects (
+			id              BIGSERIAL PRIMARY KEY,
+			owner_id        BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			org_id          BIGINT REFERENCES organizations(id) ON DELETE CASCADE,
+			name            TEXT NOT NULL,
+			slug            TEXT NOT NULL,
+			description     TEXT NOT NULL DEFAULT '',
+			methodology     TEXT NOT NULL DEFAULT 'kanban',
+			visibility      TEXT NOT NULL DEFAULT 'private',
+			default_view    TEXT NOT NULL DEFAULT 'board',
+			color           TEXT NOT NULL DEFAULT '#6366f1',
+			icon            TEXT NOT NULL DEFAULT '',
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			UNIQUE(owner_id, slug)
+		);
+
+		CREATE TABLE IF NOT EXISTS project_members (
+			id         BIGSERIAL PRIMARY KEY,
+			project_id BIGINT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+			user_id    BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			role       TEXT NOT NULL DEFAULT 'member',
+			joined_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			UNIQUE(project_id, user_id)
+		);
+
+		CREATE TABLE IF NOT EXISTS project_repos (
+			project_id BIGINT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+			repo_id    BIGINT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+			added_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			PRIMARY KEY (project_id, repo_id)
+		);
+
+		CREATE TABLE IF NOT EXISTS project_columns (
+			id         BIGSERIAL PRIMARY KEY,
+			project_id BIGINT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+			name       TEXT NOT NULL,
+			color      TEXT NOT NULL DEFAULT '#6b7280',
+			position   INT NOT NULL DEFAULT 0,
+			wip_limit  INT NOT NULL DEFAULT 0,
+			is_done    BOOLEAN NOT NULL DEFAULT false,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+
+		CREATE TABLE IF NOT EXISTS project_swimlanes (
+			id         BIGSERIAL PRIMARY KEY,
+			project_id BIGINT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+			name       TEXT NOT NULL,
+			position   INT NOT NULL DEFAULT 0,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+
+		CREATE TABLE IF NOT EXISTS project_sprints (
+			id           BIGSERIAL PRIMARY KEY,
+			project_id   BIGINT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+			name         TEXT NOT NULL,
+			goal         TEXT NOT NULL DEFAULT '',
+			number       INT NOT NULL,
+			start_date   TIMESTAMPTZ,
+			end_date     TIMESTAMPTZ,
+			state        TEXT NOT NULL DEFAULT 'planning',
+			velocity     INT NOT NULL DEFAULT 0,
+			created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			UNIQUE(project_id, number)
+		);
+
+		CREATE TABLE IF NOT EXISTS project_items (
+			id            BIGSERIAL PRIMARY KEY,
+			project_id    BIGINT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+			column_id     BIGINT NOT NULL REFERENCES project_columns(id) ON DELETE CASCADE,
+			swimlane_id   BIGINT REFERENCES project_swimlanes(id) ON DELETE SET NULL,
+			sprint_id     BIGINT REFERENCES project_sprints(id) ON DELETE SET NULL,
+			issue_id      BIGINT REFERENCES issues(id) ON DELETE CASCADE,
+			pr_id         BIGINT REFERENCES pull_requests(id) ON DELETE CASCADE,
+			title         TEXT NOT NULL DEFAULT '',
+			body          TEXT NOT NULL DEFAULT '',
+			type          TEXT NOT NULL DEFAULT 'task',
+			priority      TEXT NOT NULL DEFAULT 'medium',
+			story_points  INT NOT NULL DEFAULT 0,
+			assignee_id   BIGINT REFERENCES users(id) ON DELETE SET NULL,
+			position      INT NOT NULL DEFAULT 0,
+			due_date      TIMESTAMPTZ,
+			started_at    TIMESTAMPTZ,
+			completed_at  TIMESTAMPTZ,
+			created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+
+		CREATE TABLE IF NOT EXISTS project_item_labels (
+			item_id  BIGINT NOT NULL REFERENCES project_items(id) ON DELETE CASCADE,
+			label_id BIGINT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+			PRIMARY KEY (item_id, label_id)
+		);
+
+		CREATE TABLE IF NOT EXISTS project_item_history (
+			id         BIGSERIAL PRIMARY KEY,
+			item_id    BIGINT NOT NULL REFERENCES project_items(id) ON DELETE CASCADE,
+			user_id    BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			field      TEXT NOT NULL,
+			old_value  TEXT NOT NULL DEFAULT '',
+			new_value  TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+
+		CREATE TABLE IF NOT EXISTS calendar_events (
+			id              BIGSERIAL PRIMARY KEY,
+			user_id         BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			title           TEXT NOT NULL,
+			description     TEXT NOT NULL DEFAULT '',
+			type            TEXT NOT NULL DEFAULT 'event',
+			start_time      TIMESTAMPTZ NOT NULL,
+			end_time        TIMESTAMPTZ,
+			all_day         BOOLEAN NOT NULL DEFAULT false,
+			color           TEXT NOT NULL DEFAULT '',
+			recurrence      TEXT NOT NULL DEFAULT '',
+			project_id      BIGINT REFERENCES projects(id) ON DELETE SET NULL,
+			sprint_id       BIGINT REFERENCES project_sprints(id) ON DELETE SET NULL,
+			milestone_id    BIGINT REFERENCES milestones(id) ON DELETE SET NULL,
+			issue_id        BIGINT REFERENCES issues(id) ON DELETE SET NULL,
+			conversation_id BIGINT REFERENCES conversations(id) ON DELETE SET NULL,
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+
+		CREATE TABLE IF NOT EXISTS calendar_event_attendees (
+			event_id BIGINT NOT NULL REFERENCES calendar_events(id) ON DELETE CASCADE,
+			user_id  BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			status   TEXT NOT NULL DEFAULT 'pending',
+			PRIMARY KEY (event_id, user_id)
+		);
+
 		-- Indexes for chat performance
 		CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation_id ON chat_messages(conversation_id);
 		CREATE INDEX IF NOT EXISTS idx_chat_messages_sender_id ON chat_messages(sender_id);
 		CREATE INDEX IF NOT EXISTS idx_conversation_participants_user_id ON conversation_participants(user_id);
+
+		-- Indexes for project performance
+		CREATE INDEX IF NOT EXISTS idx_project_items_project_id ON project_items(project_id);
+		CREATE INDEX IF NOT EXISTS idx_project_items_column_id ON project_items(column_id);
+		CREATE INDEX IF NOT EXISTS idx_project_items_sprint_id ON project_items(sprint_id);
+		CREATE INDEX IF NOT EXISTS idx_project_items_assignee_id ON project_items(assignee_id);
+		CREATE INDEX IF NOT EXISTS idx_project_item_history_item_id ON project_item_history(item_id);
+		CREATE INDEX IF NOT EXISTS idx_project_members_user_id ON project_members(user_id);
+		CREATE INDEX IF NOT EXISTS idx_calendar_events_user_id ON calendar_events(user_id);
+		CREATE INDEX IF NOT EXISTS idx_calendar_events_start_time ON calendar_events(start_time);
+		CREATE INDEX IF NOT EXISTS idx_calendar_events_project_id ON calendar_events(project_id);
 
 		-- Migration helpers for existing databases
 		ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT false;
@@ -377,6 +564,8 @@ func Migrate(pool *pgxpool.Pool) error {
 		ALTER TABLE issues ADD COLUMN IF NOT EXISTS milestone_id BIGINT REFERENCES milestones(id) ON DELETE SET NULL;
 		ALTER TABLE issues ADD COLUMN IF NOT EXISTS assignee_id BIGINT REFERENCES users(id) ON DELETE SET NULL;
 		ALTER TABLE labels ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT '';
+		ALTER TABLE organizations ADD COLUMN IF NOT EXISTS location TEXT NOT NULL DEFAULT '';
+		ALTER TABLE organizations ADD COLUMN IF NOT EXISTS website TEXT NOT NULL DEFAULT '';
 	`)
 	return err
 }
