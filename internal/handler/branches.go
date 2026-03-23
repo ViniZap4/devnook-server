@@ -1,10 +1,9 @@
 package handler
 
 import (
-	"net/http"
 	"os/exec"
 
-	"github.com/go-chi/chi/v5"
+	"github.com/gofiber/fiber/v2"
 )
 
 type createBranchRequest struct {
@@ -13,24 +12,21 @@ type createBranchRequest struct {
 }
 
 // CreateBranch creates a new branch in the repository.
-func (h *Handler) CreateBranch(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	owner := chi.URLParam(r, "owner")
-	name := chi.URLParam(r, "name")
+func (h *Handler) CreateBranch(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	owner := c.Params("owner")
+	name := c.Params("name")
 
 	if owner != claims.Username {
-		writeError(w, http.StatusForbidden, "not your repository")
-		return
+		return writeError(c, fiber.StatusForbidden, "not your repository")
 	}
 
 	var req createBranchRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 	if req.Name == "" {
-		writeError(w, http.StatusBadRequest, "name is required")
-		return
+		return writeError(c, fiber.StatusBadRequest, "name is required")
 	}
 
 	from := req.From
@@ -41,31 +37,28 @@ func (h *Handler) CreateBranch(w http.ResponseWriter, r *http.Request) {
 	repoDir := h.repoPath(owner, name)
 	cmd := exec.Command("git", "-C", repoDir, "branch", req.Name, from)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		writeError(w, http.StatusConflict, "failed to create branch: "+string(out))
-		return
+		return writeError(c, fiber.StatusConflict, "failed to create branch: "+string(out))
 	}
 
-	writeJSON(w, http.StatusCreated, map[string]string{"name": req.Name})
+	return writeJSON(c, fiber.StatusCreated, map[string]string{"name": req.Name})
 }
 
 // DeleteBranch deletes a branch from the repository.
-func (h *Handler) DeleteBranch(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	owner := chi.URLParam(r, "owner")
-	repoName := chi.URLParam(r, "name")
-	branchName := chi.URLParam(r, "branch")
+func (h *Handler) DeleteBranch(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	owner := c.Params("owner")
+	repoName := c.Params("name")
+	branchName := c.Params("branch")
 
 	if owner != claims.Username {
-		writeError(w, http.StatusForbidden, "not your repository")
-		return
+		return writeError(c, fiber.StatusForbidden, "not your repository")
 	}
 
 	repoDir := h.repoPath(owner, repoName)
 	cmd := exec.Command("git", "-C", repoDir, "branch", "-D", branchName)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		writeError(w, http.StatusBadRequest, "failed to delete branch: "+string(out))
-		return
+		return writeError(c, fiber.StatusBadRequest, "failed to delete branch: "+string(out))
 	}
 
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }

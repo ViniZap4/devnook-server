@@ -3,14 +3,13 @@ package handler
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"os"
-	"strings"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/ViniZap4/devnook-server/internal/domain"
-	"github.com/go-chi/chi/v5"
+	"github.com/gofiber/fiber/v2"
 )
 
 func (h *Handler) scanRepo(rows interface{ Scan(...any) error }) (domain.Repository, error) {
@@ -25,8 +24,8 @@ const repoSelectColumns = `r.id, r.owner_id, COALESCE(o.name, u.username) as own
 	r.is_private, r.is_fork, r.forked_from_id, r.default_branch, r.topics,
 	r.stars_count, r.forks_count, r.org_id, r.created_at, r.updated_at`
 
-func (h *Handler) ListRepos(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
+func (h *Handler) ListRepos(c *fiber.Ctx) error {
+	claims := getClaims(c)
 	rows, err := h.db.Query(context.Background(),
 		`SELECT `+repoSelectColumns+`
 		 FROM repositories r
@@ -36,8 +35,7 @@ func (h *Handler) ListRepos(w http.ResponseWriter, r *http.Request) {
 		    OR r.org_id IN (SELECT org_id FROM org_members WHERE user_id = $1)
 		 ORDER BY r.updated_at DESC`, claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list repos")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to list repos")
 	}
 	defer rows.Close()
 
@@ -52,7 +50,7 @@ func (h *Handler) ListRepos(w http.ResponseWriter, r *http.Request) {
 	if repos == nil {
 		repos = []domain.Repository{}
 	}
-	writeJSON(w, http.StatusOK, repos)
+	return writeJSON(c, fiber.StatusOK, repos)
 }
 
 type createRepoRequest struct {
@@ -61,16 +59,14 @@ type createRepoRequest struct {
 	IsPrivate   bool   `json:"is_private"`
 }
 
-func (h *Handler) CreateRepo(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
+func (h *Handler) CreateRepo(c *fiber.Ctx) error {
+	claims := getClaims(c)
 	var req createRepoRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 	if req.Name == "" {
-		writeError(w, http.StatusBadRequest, "name is required")
-		return
+		return writeError(c, fiber.StatusBadRequest, "name is required")
 	}
 
 	var repoID int64
@@ -80,31 +76,28 @@ func (h *Handler) CreateRepo(w http.ResponseWriter, r *http.Request) {
 		claims.UserID, req.Name, req.Description, req.IsPrivate,
 	).Scan(&repoID)
 	if err != nil {
-		writeError(w, http.StatusConflict, "repository already exists")
-		return
+		return writeError(c, fiber.StatusConflict, "repository already exists")
 	}
 
 	repoPath := filepath.Join(h.cfg.ReposPath, claims.Username, req.Name+".git")
 	if err := os.MkdirAll(repoPath, 0o755); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create repo directory")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to create repo directory")
 	}
 	cmd := exec.Command("git", "init", "--bare", repoPath)
 	if err := cmd.Run(); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to initialize git repo")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to initialize git repo")
 	}
 
-	writeJSON(w, http.StatusCreated, map[string]any{
+	return writeJSON(c, fiber.StatusCreated, map[string]any{
 		"id":        repoID,
 		"name":      req.Name,
-		"clone_url": fmt.Sprintf("%s/%s/%s.git", r.Host, claims.Username, req.Name),
+		"clone_url": fmt.Sprintf("%s/%s/%s.git", c.Hostname(), claims.Username, req.Name),
 	})
 }
 
-func (h *Handler) GetRepo(w http.ResponseWriter, r *http.Request) {
-	owner := chi.URLParam(r, "owner")
-	name := chi.URLParam(r, "name")
+func (h *Handler) GetRepo(c *fiber.Ctx) error {
+	owner := c.Params("owner")
+	name := c.Params("name")
 
 	// Try user-owned first
 	row := h.db.QueryRow(context.Background(),
@@ -125,11 +118,10 @@ func (h *Handler) GetRepo(w http.ResponseWriter, r *http.Request) {
 			 WHERE o.name = $1 AND r.name = $2`, owner, name)
 		repo, err = h.scanRepo(row)
 		if err != nil {
-			writeError(w, http.StatusNotFound, "repository not found")
-			return
+			return writeError(c, fiber.StatusNotFound, "repository not found")
 		}
 	}
-	writeJSON(w, http.StatusOK, repo)
+	return writeJSON(c, fiber.StatusOK, repo)
 }
 
 type updateRepoRequest struct {
@@ -140,20 +132,18 @@ type updateRepoRequest struct {
 	Topics        []string `json:"topics,omitempty"`
 }
 
-func (h *Handler) UpdateRepo(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	owner := chi.URLParam(r, "owner")
-	name := chi.URLParam(r, "name")
+func (h *Handler) UpdateRepo(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	owner := c.Params("owner")
+	name := c.Params("name")
 
 	if owner != claims.Username {
-		writeError(w, http.StatusForbidden, "not your repository")
-		return
+		return writeError(c, fiber.StatusForbidden, "not your repository")
 	}
 
 	var req updateRepoRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 
 	ctx := context.Background()
@@ -190,8 +180,7 @@ func (h *Handler) UpdateRepo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(sets) == 0 {
-		w.WriteHeader(http.StatusNoContent)
-		return
+		return c.SendStatus(fiber.StatusNoContent)
 	}
 
 	sets = append(sets, "updated_at=NOW()")
@@ -200,31 +189,28 @@ func (h *Handler) UpdateRepo(w http.ResponseWriter, r *http.Request) {
 	args = append(args, claims.UserID, name)
 
 	if _, err := h.db.Exec(ctx, query, args...); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to update repository")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to update repository")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (h *Handler) DeleteRepo(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	owner := chi.URLParam(r, "owner")
-	name := chi.URLParam(r, "name")
+func (h *Handler) DeleteRepo(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	owner := c.Params("owner")
+	name := c.Params("name")
 
 	if owner != claims.Username {
-		writeError(w, http.StatusForbidden, "not your repository")
-		return
+		return writeError(c, fiber.StatusForbidden, "not your repository")
 	}
 
 	tag, err := h.db.Exec(context.Background(),
 		`DELETE FROM repositories WHERE owner_id = $1 AND name = $2`, claims.UserID, name)
 	if err != nil || tag.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "repository not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "repository not found")
 	}
 
 	repoPath := filepath.Join(h.cfg.ReposPath, owner, name+".git")
 	os.RemoveAll(repoPath)
 
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }

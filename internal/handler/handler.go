@@ -2,21 +2,17 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
-	"log"
-	"net/http"
 	"strings"
 
 	"github.com/ViniZap4/devnook-server/internal/auth"
 	"github.com/ViniZap4/devnook-server/internal/config"
 	"github.com/ViniZap4/devnook-server/internal/domain"
 	"github.com/ViniZap4/devnook-server/internal/ws"
+	"github.com/gofiber/fiber/v2"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-type contextKey string
-
-const userClaimsKey contextKey = "claims"
+const userClaimsKey = "claims"
 
 type Handler struct {
 	db  *pgxpool.Pool
@@ -28,48 +24,39 @@ func New(db *pgxpool.Pool, cfg *config.Config, hub *ws.Hub) *Handler {
 	return &Handler{db: db, cfg: cfg, hub: hub}
 }
 
-func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+func (h *Handler) Health(c *fiber.Ctx) error {
+	return writeJSON(c, fiber.StatusOK, fiber.Map{"status": "ok"})
 }
 
-func (h *Handler) AuthMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		header := r.Header.Get("Authorization")
-		if header == "" {
-			writeError(w, http.StatusUnauthorized, "missing authorization header")
-			return
-		}
-		tokenStr := strings.TrimPrefix(header, "Bearer ")
-		claims, err := auth.ValidateToken(tokenStr, h.cfg.Secret)
-		if err != nil {
-			writeError(w, http.StatusUnauthorized, "invalid token")
-			return
-		}
-		ctx := context.WithValue(r.Context(), userClaimsKey, claims)
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
+func (h *Handler) AuthMiddleware(c *fiber.Ctx) error {
+	header := c.Get("Authorization")
+	if header == "" {
+		return writeError(c, fiber.StatusUnauthorized, "missing authorization header")
+	}
+	tokenStr := strings.TrimPrefix(header, "Bearer ")
+	claims, err := auth.ValidateToken(tokenStr, h.cfg.Secret)
+	if err != nil {
+		return writeError(c, fiber.StatusUnauthorized, "invalid token")
+	}
+	c.Locals(userClaimsKey, claims)
+	return c.Next()
 }
 
-func getClaims(r *http.Request) *auth.Claims {
-	claims, _ := r.Context().Value(userClaimsKey).(*auth.Claims)
+func getClaims(c *fiber.Ctx) *auth.Claims {
+	claims, _ := c.Locals(userClaimsKey).(*auth.Claims)
 	return claims
 }
 
-func writeJSON(w http.ResponseWriter, status int, data any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(data); err != nil {
-		log.Printf("writeJSON encode error: %v", err)
-	}
+func writeJSON(c *fiber.Ctx, status int, data any) error {
+	return c.Status(status).JSON(data)
 }
 
-func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
+func writeError(c *fiber.Ctx, status int, msg string) error {
+	return c.Status(status).JSON(fiber.Map{"error": msg})
 }
 
-func readJSON(r *http.Request, v any) error {
-	defer r.Body.Close()
-	return json.NewDecoder(r.Body).Decode(v)
+func readJSON(c *fiber.Ctx, v any) error {
+	return c.BodyParser(v)
 }
 
 // userColumns is the standard column list for scanning a User (without password).

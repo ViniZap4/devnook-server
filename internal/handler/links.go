@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/gofiber/fiber/v2"
 )
 
 // In-memory per-user rate limiting for link preview requests
@@ -65,25 +67,22 @@ func isPrivateIP(host string) bool {
 	return false
 }
 
-func (h *Handler) GetLinkPreview(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	rawURL := r.URL.Query().Get("url")
+func (h *Handler) GetLinkPreview(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	rawURL := c.Query("url")
 	if rawURL == "" {
-		writeError(w, http.StatusBadRequest, "url parameter is required")
-		return
+		return writeError(c, fiber.StatusBadRequest, "url parameter is required")
 	}
 
 	parsed, err := url.Parse(rawURL)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-		writeError(w, http.StatusBadRequest, "invalid URL")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid URL")
 	}
 
 	// SSRF protection: reject private IPs
 	hostname := parsed.Hostname()
 	if isPrivateIP(hostname) {
-		writeError(w, http.StatusForbidden, "private URLs are not allowed")
-		return
+		return writeError(c, fiber.StatusForbidden, "private URLs are not allowed")
 	}
 
 	// Rate limit: 1 request per second per user
@@ -92,8 +91,7 @@ func (h *Handler) GetLinkPreview(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	if exists && now.Sub(last) < time.Second {
 		linkRateMu.Unlock()
-		writeError(w, http.StatusTooManyRequests, "rate limited")
-		return
+		return writeError(c, fiber.StatusTooManyRequests, "rate limited")
 	}
 	linkRateMap[claims.UserID] = now
 	linkRateMu.Unlock()
@@ -107,8 +105,7 @@ func (h *Handler) GetLinkPreview(w http.ResponseWriter, r *http.Request) {
 		 WHERE url = $1 AND fetched_at > NOW() - INTERVAL '24 hours'`, rawURL,
 	).Scan(&cached.URL, &cached.Title, &cached.Description, &cached.ImageURL, &cached.Domain)
 	if err == nil {
-		writeJSON(w, http.StatusOK, cached)
-		return
+		return writeJSON(c, fiber.StatusOK, cached)
 	}
 
 	// Fetch the URL — with SSRF protection on redirects
@@ -126,23 +123,20 @@ func (h *Handler) GetLinkPreview(w http.ResponseWriter, r *http.Request) {
 	}
 	req, err := http.NewRequest("GET", rawURL, nil)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid URL")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid URL")
 	}
 	req.Header.Set("User-Agent", "DevNook LinkPreview/1.0")
 
 	resp, err := client.Do(req)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "failed to fetch URL")
-		return
+		return writeError(c, fiber.StatusBadGateway, "failed to fetch URL")
 	}
 	defer resp.Body.Close()
 
 	// Limit read to 1MB
 	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "failed to read response")
-		return
+		return writeError(c, fiber.StatusBadGateway, "failed to read response")
 	}
 
 	// Parse OG tags
@@ -161,7 +155,7 @@ func (h *Handler) GetLinkPreview(w http.ResponseWriter, r *http.Request) {
 		log.Printf("failed to cache link preview for %s: %v", rawURL, err)
 	}
 
-	writeJSON(w, http.StatusOK, preview)
+	return writeJSON(c, fiber.StatusOK, preview)
 }
 
 func parseOGTags(body string, preview *linkPreview) {

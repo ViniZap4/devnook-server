@@ -2,18 +2,17 @@ package handler
 
 import (
 	"context"
-	"net/http"
 	"strconv"
 
 	"github.com/ViniZap4/devnook-server/internal/domain"
 	"github.com/ViniZap4/devnook-server/internal/ws"
-	"github.com/go-chi/chi/v5"
+	"github.com/gofiber/fiber/v2"
 )
 
-func (h *Handler) ListNotifications(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
+func (h *Handler) ListNotifications(c *fiber.Ctx) error {
+	claims := getClaims(c)
 
-	unreadOnly := r.URL.Query().Get("unread") == "true"
+	unreadOnly := c.Query("unread") == "true"
 
 	var query string
 	var args []any
@@ -29,8 +28,7 @@ func (h *Handler) ListNotifications(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := h.db.Query(context.Background(), query, args...)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list notifications")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to list notifications")
 	}
 	defer rows.Close()
 
@@ -46,41 +44,40 @@ func (h *Handler) ListNotifications(w http.ResponseWriter, r *http.Request) {
 	if notifications == nil {
 		notifications = []domain.Notification{}
 	}
-	writeJSON(w, http.StatusOK, notifications)
+	return writeJSON(c, fiber.StatusOK, notifications)
 }
 
-func (h *Handler) UnreadNotificationCount(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
+func (h *Handler) UnreadNotificationCount(c *fiber.Ctx) error {
+	claims := getClaims(c)
 
 	var count int
 	h.db.QueryRow(context.Background(),
 		`SELECT COUNT(*) FROM notifications WHERE user_id = $1 AND read = false`,
 		claims.UserID).Scan(&count)
 
-	writeJSON(w, http.StatusOK, map[string]int{"count": count})
+	return writeJSON(c, fiber.StatusOK, map[string]int{"count": count})
 }
 
-func (h *Handler) MarkNotificationRead(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+func (h *Handler) MarkNotificationRead(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	id, err := strconv.ParseInt(c.Params("id"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid notification id")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid notification id")
 	}
 
 	h.db.Exec(context.Background(),
 		`UPDATE notifications SET read = true WHERE id = $1 AND user_id = $2`,
 		id, claims.UserID)
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (h *Handler) MarkAllNotificationsRead(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
+func (h *Handler) MarkAllNotificationsRead(c *fiber.Ctx) error {
+	claims := getClaims(c)
 
 	h.db.Exec(context.Background(),
 		`UPDATE notifications SET read = true WHERE user_id = $1 AND read = false`,
 		claims.UserID)
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
 // CreateNotification inserts a notification and pushes it via WebSocket.

@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"net/http"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -13,7 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/ViniZap4/devnook-server/internal/domain"
-	"github.com/go-chi/chi/v5"
+	"github.com/gofiber/fiber/v2"
 )
 
 // repoPath returns the bare repo path on disk for the given owner/name.
@@ -21,20 +20,20 @@ func (h *Handler) repoPath(owner, name string) string {
 	return filepath.Join(h.cfg.ReposPath, owner, name+".git")
 }
 
-// resolveRepoOwner looks up the repo and returns (repoPath, error).
+// resolveRepoPath looks up the repo and returns (repoPath, error).
 // Owner can be a user or org name.
-func (h *Handler) resolveRepoPath(r *http.Request) (string, error) {
-	owner := chi.URLParam(r, "owner")
-	name := chi.URLParam(r, "name")
+func (h *Handler) resolveRepoPath(c *fiber.Ctx) (string, error) {
+	owner := c.Params("owner")
+	name := c.Params("name")
 	return h.repoPath(owner, name), nil
 }
 
 // GetTree returns the directory listing at a given ref and path.
-func (h *Handler) GetTree(w http.ResponseWriter, r *http.Request) {
-	owner := chi.URLParam(r, "owner")
-	name := chi.URLParam(r, "name")
-	ref := chi.URLParam(r, "ref")
-	path := chi.URLParam(r, "*")
+func (h *Handler) GetTree(c *fiber.Ctx) error {
+	owner := c.Params("owner")
+	name := c.Params("name")
+	ref := c.Params("ref")
+	path := c.Params("*")
 
 	repoDir := h.repoPath(owner, name)
 
@@ -46,8 +45,7 @@ func (h *Handler) GetTree(w http.ResponseWriter, r *http.Request) {
 	cmd := exec.Command("git", "-C", repoDir, "ls-tree", "-l", treeish)
 	out, err := cmd.Output()
 	if err != nil {
-		writeError(w, http.StatusNotFound, "tree not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "tree not found")
 	}
 
 	var entries []domain.TreeEntry
@@ -86,15 +84,15 @@ func (h *Handler) GetTree(w http.ResponseWriter, r *http.Request) {
 		entries = []domain.TreeEntry{}
 	}
 
-	writeJSON(w, http.StatusOK, entries)
+	return writeJSON(c, fiber.StatusOK, entries)
 }
 
 // GetBlob returns file content at a given ref and path.
-func (h *Handler) GetBlob(w http.ResponseWriter, r *http.Request) {
-	owner := chi.URLParam(r, "owner")
-	name := chi.URLParam(r, "name")
-	ref := chi.URLParam(r, "ref")
-	path := chi.URLParam(r, "*")
+func (h *Handler) GetBlob(c *fiber.Ctx) error {
+	owner := c.Params("owner")
+	name := c.Params("name")
+	ref := c.Params("ref")
+	path := c.Params("*")
 
 	repoDir := h.repoPath(owner, name)
 
@@ -102,8 +100,7 @@ func (h *Handler) GetBlob(w http.ResponseWriter, r *http.Request) {
 	sizeCmd := exec.Command("git", "-C", repoDir, "cat-file", "-s", ref+":"+path)
 	sizeOut, err := sizeCmd.Output()
 	if err != nil {
-		writeError(w, http.StatusNotFound, "file not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "file not found")
 	}
 	size, _ := strconv.ParseInt(strings.TrimSpace(string(sizeOut)), 10, 64)
 
@@ -111,8 +108,7 @@ func (h *Handler) GetBlob(w http.ResponseWriter, r *http.Request) {
 	cmd := exec.Command("git", "-C", repoDir, "show", ref+":"+path)
 	out, err := cmd.Output()
 	if err != nil {
-		writeError(w, http.StatusNotFound, "file not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "file not found")
 	}
 
 	binary := !utf8.Valid(out)
@@ -129,21 +125,21 @@ func (h *Handler) GetBlob(w http.ResponseWriter, r *http.Request) {
 		Binary:  binary,
 	}
 
-	writeJSON(w, http.StatusOK, blob)
+	return writeJSON(c, fiber.StatusOK, blob)
 }
 
 // GetCommits returns the commit history for a ref.
-func (h *Handler) GetCommits(w http.ResponseWriter, r *http.Request) {
-	owner := chi.URLParam(r, "owner")
-	name := chi.URLParam(r, "name")
+func (h *Handler) GetCommits(c *fiber.Ctx) error {
+	owner := c.Params("owner")
+	name := c.Params("name")
 	repoDir := h.repoPath(owner, name)
 
-	ref := r.URL.Query().Get("ref")
+	ref := c.Query("ref")
 	if ref == "" {
 		ref = "HEAD"
 	}
 
-	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	page, _ := strconv.Atoi(c.Query("page"))
 	if page < 1 {
 		page = 1
 	}
@@ -158,8 +154,7 @@ func (h *Handler) GetCommits(w http.ResponseWriter, r *http.Request) {
 	)
 	out, err := cmd.Output()
 	if err != nil {
-		writeError(w, http.StatusNotFound, "commits not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "commits not found")
 	}
 
 	var commits []domain.Commit
@@ -179,13 +174,13 @@ func (h *Handler) GetCommits(w http.ResponseWriter, r *http.Request) {
 		commits = []domain.Commit{}
 	}
 
-	writeJSON(w, http.StatusOK, commits)
+	return writeJSON(c, fiber.StatusOK, commits)
 }
 
 // GetBranches returns the list of branches.
-func (h *Handler) GetBranches(w http.ResponseWriter, r *http.Request) {
-	owner := chi.URLParam(r, "owner")
-	name := chi.URLParam(r, "name")
+func (h *Handler) GetBranches(c *fiber.Ctx) error {
+	owner := c.Params("owner")
+	name := c.Params("name")
 	repoDir := h.repoPath(owner, name)
 
 	// Get default branch from DB
@@ -202,8 +197,7 @@ func (h *Handler) GetBranches(w http.ResponseWriter, r *http.Request) {
 	cmd := exec.Command("git", "-C", repoDir, "branch", "--format=%(refname:short)%(HEAD)")
 	out, err := cmd.Output()
 	if err != nil {
-		writeJSON(w, http.StatusOK, []domain.Branch{})
-		return
+		return writeJSON(c, fiber.StatusOK, []domain.Branch{})
 	}
 
 	var branches []domain.Branch
@@ -226,16 +220,16 @@ func (h *Handler) GetBranches(w http.ResponseWriter, r *http.Request) {
 		branches = []domain.Branch{}
 	}
 
-	writeJSON(w, http.StatusOK, branches)
+	return writeJSON(c, fiber.StatusOK, branches)
 }
 
 // GetReadme tries to find and return a README file from the repo root.
-func (h *Handler) GetReadme(w http.ResponseWriter, r *http.Request) {
-	owner := chi.URLParam(r, "owner")
-	name := chi.URLParam(r, "name")
+func (h *Handler) GetReadme(c *fiber.Ctx) error {
+	owner := c.Params("owner")
+	name := c.Params("name")
 	repoDir := h.repoPath(owner, name)
 
-	ref := r.URL.Query().Get("ref")
+	ref := c.Query("ref")
 	if ref == "" {
 		ref = "HEAD"
 	}
@@ -246,13 +240,12 @@ func (h *Handler) GetReadme(w http.ResponseWriter, r *http.Request) {
 		cmd := exec.Command("git", "-C", repoDir, "show", ref+":"+candidate)
 		out, err := cmd.Output()
 		if err == nil {
-			writeJSON(w, http.StatusOK, map[string]string{
+			return writeJSON(c, fiber.StatusOK, map[string]string{
 				"name":    candidate,
 				"content": string(out),
 			})
-			return
 		}
 	}
 
-	writeError(w, http.StatusNotFound, "no readme found")
+	return writeError(c, fiber.StatusNotFound, "no readme found")
 }

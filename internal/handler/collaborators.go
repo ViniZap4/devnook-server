@@ -2,10 +2,9 @@ package handler
 
 import (
 	"context"
-	"net/http"
 	"time"
 
-	"github.com/go-chi/chi/v5"
+	"github.com/gofiber/fiber/v2"
 )
 
 type Collaborator struct {
@@ -17,14 +16,13 @@ type Collaborator struct {
 	CreatedAt  time.Time `json:"created_at"`
 }
 
-func (h *Handler) ListCollaborators(w http.ResponseWriter, r *http.Request) {
-	owner := chi.URLParam(r, "owner")
-	name := chi.URLParam(r, "name")
+func (h *Handler) ListCollaborators(c *fiber.Ctx) error {
+	owner := c.Params("owner")
+	name := c.Params("name")
 
 	repoID, err := h.getRepoID(owner, name)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "repository not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "repository not found")
 	}
 
 	rows, err := h.db.Query(context.Background(),
@@ -34,8 +32,7 @@ func (h *Handler) ListCollaborators(w http.ResponseWriter, r *http.Request) {
 		 WHERE rc.repo_id = $1
 		 ORDER BY rc.created_at`, repoID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list collaborators")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to list collaborators")
 	}
 	defer rows.Close()
 
@@ -50,43 +47,38 @@ func (h *Handler) ListCollaborators(w http.ResponseWriter, r *http.Request) {
 	if collabs == nil {
 		collabs = []Collaborator{}
 	}
-	writeJSON(w, http.StatusOK, collabs)
+	return writeJSON(c, fiber.StatusOK, collabs)
 }
 
-func (h *Handler) AddCollaborator(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	owner := chi.URLParam(r, "owner")
-	name := chi.URLParam(r, "name")
+func (h *Handler) AddCollaborator(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	owner := c.Params("owner")
+	name := c.Params("name")
 
 	repoID, err := h.getRepoID(owner, name)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "repository not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "repository not found")
 	}
 
 	// Verify caller owns the repo
 	var ownerID int64
 	if err := h.db.QueryRow(context.Background(),
 		`SELECT owner_id FROM repositories WHERE id = $1`, repoID).Scan(&ownerID); err != nil {
-		writeError(w, http.StatusNotFound, "repository not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "repository not found")
 	}
 	if claims.UserID != ownerID {
-		writeError(w, http.StatusForbidden, "only the repository owner can manage collaborators")
-		return
+		return writeError(c, fiber.StatusForbidden, "only the repository owner can manage collaborators")
 	}
 
 	var req struct {
 		Username   string `json:"username"`
 		Permission string `json:"permission"`
 	}
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 	if req.Username == "" {
-		writeError(w, http.StatusBadRequest, "username is required")
-		return
+		return writeError(c, fiber.StatusBadRequest, "username is required")
 	}
 	if req.Permission == "" {
 		req.Permission = "write"
@@ -97,8 +89,7 @@ func (h *Handler) AddCollaborator(w http.ResponseWriter, r *http.Request) {
 	err = h.db.QueryRow(context.Background(),
 		`SELECT id FROM users WHERE username = $1`, req.Username).Scan(&userID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "user not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "user not found")
 	}
 
 	_, err = h.db.Exec(context.Background(),
@@ -107,53 +98,48 @@ func (h *Handler) AddCollaborator(w http.ResponseWriter, r *http.Request) {
 		 DO UPDATE SET permission = $3`,
 		repoID, userID, req.Permission)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to add collaborator")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to add collaborator")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (h *Handler) RemoveCollaborator(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	owner := chi.URLParam(r, "owner")
-	name := chi.URLParam(r, "name")
-	username := chi.URLParam(r, "username")
+func (h *Handler) RemoveCollaborator(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	owner := c.Params("owner")
+	name := c.Params("name")
+	username := c.Params("username")
 
 	repoID, err := h.getRepoID(owner, name)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "repository not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "repository not found")
 	}
 
 	// Verify caller owns the repo
 	var ownerID int64
 	if err := h.db.QueryRow(context.Background(),
 		`SELECT owner_id FROM repositories WHERE id = $1`, repoID).Scan(&ownerID); err != nil {
-		writeError(w, http.StatusNotFound, "repository not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "repository not found")
 	}
 	if claims.UserID != ownerID {
-		writeError(w, http.StatusForbidden, "only the repository owner can manage collaborators")
-		return
+		return writeError(c, fiber.StatusForbidden, "only the repository owner can manage collaborators")
 	}
 
 	var userID int64
 	err = h.db.QueryRow(context.Background(),
 		`SELECT id FROM users WHERE username = $1`, username).Scan(&userID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "user not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "user not found")
 	}
 
 	h.db.Exec(context.Background(),
 		`DELETE FROM repo_collaborators WHERE repo_id = $1 AND user_id = $2`, repoID, userID)
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (h *Handler) TransferRepo(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	owner := chi.URLParam(r, "owner")
-	name := chi.URLParam(r, "name")
+func (h *Handler) TransferRepo(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	owner := c.Params("owner")
+	name := c.Params("name")
 
 	// Get current repo
 	var repoID, ownerID int64
@@ -163,34 +149,29 @@ func (h *Handler) TransferRepo(w http.ResponseWriter, r *http.Request) {
 		 WHERE u.username = $1 AND r.name = $2`, owner, name,
 	).Scan(&repoID, &ownerID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "repository not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "repository not found")
 	}
 
 	// Only repo owner can transfer
 	if claims.UserID != ownerID {
-		writeError(w, http.StatusForbidden, "only the repository owner can transfer")
-		return
+		return writeError(c, fiber.StatusForbidden, "only the repository owner can transfer")
 	}
 
 	var req struct {
 		NewOwner string `json:"new_owner"`
 	}
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 	if req.NewOwner == "" {
-		writeError(w, http.StatusBadRequest, "new_owner is required")
-		return
+		return writeError(c, fiber.StatusBadRequest, "new_owner is required")
 	}
 
 	var newOwnerID int64
 	err = h.db.QueryRow(context.Background(),
 		`SELECT id FROM users WHERE username = $1`, req.NewOwner).Scan(&newOwnerID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "new owner not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "new owner not found")
 	}
 
 	// Check for name conflict
@@ -199,17 +180,15 @@ func (h *Handler) TransferRepo(w http.ResponseWriter, r *http.Request) {
 		`SELECT EXISTS(SELECT 1 FROM repositories WHERE owner_id = $1 AND name = $2)`,
 		newOwnerID, name).Scan(&exists)
 	if exists {
-		writeError(w, http.StatusConflict, "the new owner already has a repository with this name")
-		return
+		return writeError(c, fiber.StatusConflict, "the new owner already has a repository with this name")
 	}
 
 	_, err = h.db.Exec(context.Background(),
 		`UPDATE repositories SET owner_id = $1, updated_at = NOW() WHERE id = $2`,
 		newOwnerID, repoID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to transfer repository")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to transfer repository")
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{"new_owner": req.NewOwner})
+	return writeJSON(c, fiber.StatusOK, map[string]string{"new_owner": req.NewOwner})
 }

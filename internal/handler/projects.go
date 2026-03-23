@@ -2,11 +2,10 @@ package handler
 
 import (
 	"context"
-	"net/http"
 	"strconv"
 
 	"github.com/ViniZap4/devnook-server/internal/domain"
-	"github.com/go-chi/chi/v5"
+	"github.com/gofiber/fiber/v2"
 )
 
 // getProjectBySlug resolves a project slug to its ID, verifying the caller is a member.
@@ -30,8 +29,8 @@ func (h *Handler) getProjectRole(ctx context.Context, projectID, userID int64) (
 
 // --- Projects ---
 
-func (h *Handler) ListProjects(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
+func (h *Handler) ListProjects(c *fiber.Ctx) error {
+	claims := getClaims(c)
 	rows, err := h.db.Query(context.Background(),
 		`SELECT p.id, p.owner_id, u.username, p.org_id,
 		        (SELECT o.name FROM organizations o WHERE o.id = p.org_id),
@@ -46,8 +45,7 @@ func (h *Handler) ListProjects(w http.ResponseWriter, r *http.Request) {
 		 WHERE pm.user_id = $1
 		 ORDER BY p.updated_at DESC`, claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list projects")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to list projects")
 	}
 	defer rows.Close()
 
@@ -68,7 +66,7 @@ func (h *Handler) ListProjects(w http.ResponseWriter, r *http.Request) {
 	if projects == nil {
 		projects = []domain.Project{}
 	}
-	writeJSON(w, http.StatusOK, projects)
+	return writeJSON(c, fiber.StatusOK, projects)
 }
 
 type createProjectRequest struct {
@@ -81,16 +79,14 @@ type createProjectRequest struct {
 	Icon        string `json:"icon"`
 }
 
-func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
+func (h *Handler) CreateProject(c *fiber.Ctx) error {
+	claims := getClaims(c)
 	var req createProjectRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 	if req.Name == "" {
-		writeError(w, http.StatusBadRequest, "name is required")
-		return
+		return writeError(c, fiber.StatusBadRequest, "name is required")
 	}
 
 	methodology := req.Methodology
@@ -111,8 +107,7 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 	ctx := context.Background()
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to begin transaction")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to begin transaction")
 	}
 	defer tx.Rollback(ctx)
 
@@ -126,8 +121,7 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 		visibility, defaultView, req.Color, req.Icon,
 	).Scan(&projectID, &resultSlug)
 	if err != nil {
-		writeError(w, http.StatusConflict, "project name already exists")
-		return
+		return writeError(c, fiber.StatusConflict, "project name already exists")
 	}
 
 	// Creator becomes owner member
@@ -135,8 +129,7 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 		`INSERT INTO project_members (project_id, user_id, role) VALUES ($1, $2, 'owner')`,
 		projectID, claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to add owner")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to add owner")
 	}
 
 	// Create default columns based on methodology
@@ -160,28 +153,26 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 		cols = []col{{"Backlog", false}, {"To Do", false}, {"In Progress", false}, {"Review", false}, {"Done", true}}
 	}
 
-	for i, c := range cols {
+	for i, col := range cols {
 		_, err = tx.Exec(ctx,
 			`INSERT INTO project_columns (project_id, name, position, is_done)
 			 VALUES ($1, $2, $3, $4)`,
-			projectID, c.name, i, c.isDone)
+			projectID, col.name, i, col.isDone)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to create default columns")
-			return
+			return writeError(c, fiber.StatusInternalServerError, "failed to create default columns")
 		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to commit")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to commit")
 	}
 
-	writeJSON(w, http.StatusCreated, map[string]interface{}{"id": projectID, "slug": resultSlug})
+	return writeJSON(c, fiber.StatusCreated, map[string]interface{}{"id": projectID, "slug": resultSlug})
 }
 
-func (h *Handler) GetProject(w http.ResponseWriter, r *http.Request) {
-	slug := chi.URLParam(r, "projectSlug")
-	claims := getClaims(r)
+func (h *Handler) GetProject(c *fiber.Ctx) error {
+	slug := c.Params("projectSlug")
+	claims := getClaims(c)
 
 	var p domain.Project
 	err := h.db.QueryRow(context.Background(),
@@ -204,10 +195,9 @@ func (h *Handler) GetProject(w http.ResponseWriter, r *http.Request) {
 			&p.CreatedAt, &p.UpdatedAt,
 		)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "project not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "project not found")
 	}
-	writeJSON(w, http.StatusOK, p)
+	return writeJSON(c, fiber.StatusOK, p)
 }
 
 type updateProjectRequest struct {
@@ -220,20 +210,18 @@ type updateProjectRequest struct {
 	Icon        *string `json:"icon"`
 }
 
-func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
-	slug := chi.URLParam(r, "projectSlug")
-	claims := getClaims(r)
+func (h *Handler) UpdateProject(c *fiber.Ctx) error {
+	slug := c.Params("projectSlug")
+	claims := getClaims(c)
 
 	projectID, err := h.getProjectBySlug(context.Background(), slug, claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "project not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "project not found")
 	}
 
 	var req updateProjectRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 
 	tag, err := h.db.Exec(context.Background(),
@@ -250,47 +238,42 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 		req.Name, req.Description, req.Methodology, req.Visibility,
 		req.DefaultView, req.Color, req.Icon, projectID)
 	if err != nil || tag.RowsAffected() == 0 {
-		writeError(w, http.StatusInternalServerError, "failed to update project")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to update project")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (h *Handler) DeleteProject(w http.ResponseWriter, r *http.Request) {
-	slug := chi.URLParam(r, "projectSlug")
-	claims := getClaims(r)
+func (h *Handler) DeleteProject(c *fiber.Ctx) error {
+	slug := c.Params("projectSlug")
+	claims := getClaims(c)
 
 	projectID, err := h.getProjectBySlug(context.Background(), slug, claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "project not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "project not found")
 	}
 
 	role, err := h.getProjectRole(context.Background(), projectID, claims.UserID)
 	if err != nil || role != "owner" {
-		writeError(w, http.StatusForbidden, "only the project owner can delete this project")
-		return
+		return writeError(c, fiber.StatusForbidden, "only the project owner can delete this project")
 	}
 
 	tag, err := h.db.Exec(context.Background(),
 		`DELETE FROM projects WHERE id = $1`, projectID)
 	if err != nil || tag.RowsAffected() == 0 {
-		writeError(w, http.StatusInternalServerError, "failed to delete project")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to delete project")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
 // --- Members ---
 
-func (h *Handler) ListProjectMembers(w http.ResponseWriter, r *http.Request) {
-	slug := chi.URLParam(r, "projectSlug")
-	claims := getClaims(r)
+func (h *Handler) ListProjectMembers(c *fiber.Ctx) error {
+	slug := c.Params("projectSlug")
+	claims := getClaims(c)
 
 	projectID, err := h.getProjectBySlug(context.Background(), slug, claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "project not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "project not found")
 	}
 
 	rows, err := h.db.Query(context.Background(),
@@ -300,8 +283,7 @@ func (h *Handler) ListProjectMembers(w http.ResponseWriter, r *http.Request) {
 		 WHERE pm.project_id = $1
 		 ORDER BY pm.joined_at`, projectID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list members")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to list members")
 	}
 	defer rows.Close()
 
@@ -316,7 +298,7 @@ func (h *Handler) ListProjectMembers(w http.ResponseWriter, r *http.Request) {
 	if members == nil {
 		members = []domain.ProjectMember{}
 	}
-	writeJSON(w, http.StatusOK, members)
+	return writeJSON(c, fiber.StatusOK, members)
 }
 
 type addProjectMemberRequest struct {
@@ -324,30 +306,26 @@ type addProjectMemberRequest struct {
 	Role     string `json:"role"`
 }
 
-func (h *Handler) AddProjectMember(w http.ResponseWriter, r *http.Request) {
-	slug := chi.URLParam(r, "projectSlug")
-	claims := getClaims(r)
+func (h *Handler) AddProjectMember(c *fiber.Ctx) error {
+	slug := c.Params("projectSlug")
+	claims := getClaims(c)
 
 	projectID, err := h.getProjectBySlug(context.Background(), slug, claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "project not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "project not found")
 	}
 
 	callerRole, err := h.getProjectRole(context.Background(), projectID, claims.UserID)
 	if err != nil || (callerRole != "owner" && callerRole != "admin") {
-		writeError(w, http.StatusForbidden, "insufficient permissions")
-		return
+		return writeError(c, fiber.StatusForbidden, "insufficient permissions")
 	}
 
 	var req addProjectMemberRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 	if req.Username == "" {
-		writeError(w, http.StatusBadRequest, "username is required")
-		return
+		return writeError(c, fiber.StatusBadRequest, "username is required")
 	}
 	if req.Role == "" {
 		req.Role = "member"
@@ -355,8 +333,7 @@ func (h *Handler) AddProjectMember(w http.ResponseWriter, r *http.Request) {
 
 	targetID, err := h.resolveUserID(context.Background(), req.Username)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "user not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "user not found")
 	}
 
 	_, err = h.db.Exec(context.Background(),
@@ -364,39 +341,34 @@ func (h *Handler) AddProjectMember(w http.ResponseWriter, r *http.Request) {
 		 ON CONFLICT (project_id, user_id) DO UPDATE SET role = $3`,
 		projectID, targetID, req.Role)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to add member")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to add member")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (h *Handler) UpdateProjectMemberRole(w http.ResponseWriter, r *http.Request) {
-	slug := chi.URLParam(r, "projectSlug")
-	username := chi.URLParam(r, "username")
-	claims := getClaims(r)
+func (h *Handler) UpdateProjectMemberRole(c *fiber.Ctx) error {
+	slug := c.Params("projectSlug")
+	username := c.Params("username")
+	claims := getClaims(c)
 
 	projectID, err := h.getProjectBySlug(context.Background(), slug, claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "project not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "project not found")
 	}
 
 	callerRole, err := h.getProjectRole(context.Background(), projectID, claims.UserID)
 	if err != nil || callerRole != "owner" {
-		writeError(w, http.StatusForbidden, "only the project owner can change roles")
-		return
+		return writeError(c, fiber.StatusForbidden, "only the project owner can change roles")
 	}
 
 	var req struct {
 		Role string `json:"role"`
 	}
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 	if req.Role == "" {
-		writeError(w, http.StatusBadRequest, "role is required")
-		return
+		return writeError(c, fiber.StatusBadRequest, "role is required")
 	}
 
 	tag, err := h.db.Exec(context.Background(),
@@ -404,27 +376,24 @@ func (h *Handler) UpdateProjectMemberRole(w http.ResponseWriter, r *http.Request
 		 WHERE project_id = $2 AND user_id = (SELECT id FROM users WHERE username = $3)`,
 		req.Role, projectID, username)
 	if err != nil || tag.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "member not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "member not found")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (h *Handler) RemoveProjectMember(w http.ResponseWriter, r *http.Request) {
-	slug := chi.URLParam(r, "projectSlug")
-	username := chi.URLParam(r, "username")
-	claims := getClaims(r)
+func (h *Handler) RemoveProjectMember(c *fiber.Ctx) error {
+	slug := c.Params("projectSlug")
+	username := c.Params("username")
+	claims := getClaims(c)
 
 	projectID, err := h.getProjectBySlug(context.Background(), slug, claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "project not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "project not found")
 	}
 
 	callerRole, err := h.getProjectRole(context.Background(), projectID, claims.UserID)
 	if err != nil || (callerRole != "owner" && callerRole != "admin") {
-		writeError(w, http.StatusForbidden, "insufficient permissions")
-		return
+		return writeError(c, fiber.StatusForbidden, "insufficient permissions")
 	}
 
 	tag, err := h.db.Exec(context.Background(),
@@ -432,22 +401,20 @@ func (h *Handler) RemoveProjectMember(w http.ResponseWriter, r *http.Request) {
 		 WHERE project_id = $1 AND user_id = (SELECT id FROM users WHERE username = $2)`,
 		projectID, username)
 	if err != nil || tag.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "member not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "member not found")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
 // --- Repos ---
 
-func (h *Handler) ListProjectRepos(w http.ResponseWriter, r *http.Request) {
-	slug := chi.URLParam(r, "projectSlug")
-	claims := getClaims(r)
+func (h *Handler) ListProjectRepos(c *fiber.Ctx) error {
+	slug := c.Params("projectSlug")
+	claims := getClaims(c)
 
 	projectID, err := h.getProjectBySlug(context.Background(), slug, claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "project not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "project not found")
 	}
 
 	rows, err := h.db.Query(context.Background(),
@@ -458,8 +425,7 @@ func (h *Handler) ListProjectRepos(w http.ResponseWriter, r *http.Request) {
 		 WHERE pr.project_id = $1
 		 ORDER BY r.updated_at DESC`, projectID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list repos")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to list repos")
 	}
 	defer rows.Close()
 
@@ -475,29 +441,26 @@ func (h *Handler) ListProjectRepos(w http.ResponseWriter, r *http.Request) {
 	if repos == nil {
 		repos = []domain.Repository{}
 	}
-	writeJSON(w, http.StatusOK, repos)
+	return writeJSON(c, fiber.StatusOK, repos)
 }
 
-func (h *Handler) LinkProjectRepo(w http.ResponseWriter, r *http.Request) {
-	slug := chi.URLParam(r, "projectSlug")
-	claims := getClaims(r)
+func (h *Handler) LinkProjectRepo(c *fiber.Ctx) error {
+	slug := c.Params("projectSlug")
+	claims := getClaims(c)
 
 	projectID, err := h.getProjectBySlug(context.Background(), slug, claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "project not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "project not found")
 	}
 
 	var req struct {
 		RepoID int64 `json:"repo_id"`
 	}
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 	if req.RepoID == 0 {
-		writeError(w, http.StatusBadRequest, "repo_id is required")
-		return
+		return writeError(c, fiber.StatusBadRequest, "repo_id is required")
 	}
 
 	_, err = h.db.Exec(context.Background(),
@@ -505,48 +468,43 @@ func (h *Handler) LinkProjectRepo(w http.ResponseWriter, r *http.Request) {
 		 ON CONFLICT (project_id, repo_id) DO NOTHING`,
 		projectID, req.RepoID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to link repo")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to link repo")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (h *Handler) UnlinkProjectRepo(w http.ResponseWriter, r *http.Request) {
-	slug := chi.URLParam(r, "projectSlug")
-	claims := getClaims(r)
+func (h *Handler) UnlinkProjectRepo(c *fiber.Ctx) error {
+	slug := c.Params("projectSlug")
+	claims := getClaims(c)
 
 	projectID, err := h.getProjectBySlug(context.Background(), slug, claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "project not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "project not found")
 	}
 
-	repoID, err := strconv.ParseInt(chi.URLParam(r, "repoId"), 10, 64)
+	repoID, err := strconv.ParseInt(c.Params("repoId"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid repo id")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid repo id")
 	}
 
 	tag, err := h.db.Exec(context.Background(),
 		`DELETE FROM project_repos WHERE project_id = $1 AND repo_id = $2`,
 		projectID, repoID)
 	if err != nil || tag.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "repo link not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "repo link not found")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
 // --- Columns ---
 
-func (h *Handler) ListProjectColumns(w http.ResponseWriter, r *http.Request) {
-	slug := chi.URLParam(r, "projectSlug")
-	claims := getClaims(r)
+func (h *Handler) ListProjectColumns(c *fiber.Ctx) error {
+	slug := c.Params("projectSlug")
+	claims := getClaims(c)
 
 	projectID, err := h.getProjectBySlug(context.Background(), slug, claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "project not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "project not found")
 	}
 
 	rows, err := h.db.Query(context.Background(),
@@ -557,24 +515,23 @@ func (h *Handler) ListProjectColumns(w http.ResponseWriter, r *http.Request) {
 		 WHERE c.project_id = $1
 		 ORDER BY c.position`, projectID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list columns")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to list columns")
 	}
 	defer rows.Close()
 
 	var columns []domain.ProjectColumn
 	for rows.Next() {
-		var c domain.ProjectColumn
-		if err := rows.Scan(&c.ID, &c.ProjectID, &c.Name, &c.Color, &c.Position,
-			&c.WIPLimit, &c.IsDone, &c.ItemCount, &c.CreatedAt); err != nil {
+		var col domain.ProjectColumn
+		if err := rows.Scan(&col.ID, &col.ProjectID, &col.Name, &col.Color, &col.Position,
+			&col.WIPLimit, &col.IsDone, &col.ItemCount, &col.CreatedAt); err != nil {
 			continue
 		}
-		columns = append(columns, c)
+		columns = append(columns, col)
 	}
 	if columns == nil {
 		columns = []domain.ProjectColumn{}
 	}
-	writeJSON(w, http.StatusOK, columns)
+	return writeJSON(c, fiber.StatusOK, columns)
 }
 
 type createColumnRequest struct {
@@ -584,24 +541,21 @@ type createColumnRequest struct {
 	IsDone   bool   `json:"is_done"`
 }
 
-func (h *Handler) CreateProjectColumn(w http.ResponseWriter, r *http.Request) {
-	slug := chi.URLParam(r, "projectSlug")
-	claims := getClaims(r)
+func (h *Handler) CreateProjectColumn(c *fiber.Ctx) error {
+	slug := c.Params("projectSlug")
+	claims := getClaims(c)
 
 	projectID, err := h.getProjectBySlug(context.Background(), slug, claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "project not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "project not found")
 	}
 
 	var req createColumnRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 	if req.Name == "" {
-		writeError(w, http.StatusBadRequest, "name is required")
-		return
+		return writeError(c, fiber.StatusBadRequest, "name is required")
 	}
 
 	var maxPos int
@@ -616,10 +570,9 @@ func (h *Handler) CreateProjectColumn(w http.ResponseWriter, r *http.Request) {
 		projectID, req.Name, req.Color, maxPos+1, req.WIPLimit, req.IsDone,
 	).Scan(&id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create column")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to create column")
 	}
-	writeJSON(w, http.StatusCreated, map[string]interface{}{"id": id})
+	return writeJSON(c, fiber.StatusCreated, map[string]interface{}{"id": id})
 }
 
 type updateColumnRequest struct {
@@ -629,26 +582,23 @@ type updateColumnRequest struct {
 	IsDone   *bool   `json:"is_done"`
 }
 
-func (h *Handler) UpdateProjectColumn(w http.ResponseWriter, r *http.Request) {
-	slug := chi.URLParam(r, "projectSlug")
-	claims := getClaims(r)
+func (h *Handler) UpdateProjectColumn(c *fiber.Ctx) error {
+	slug := c.Params("projectSlug")
+	claims := getClaims(c)
 
 	projectID, err := h.getProjectBySlug(context.Background(), slug, claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "project not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "project not found")
 	}
 
-	columnID, err := strconv.ParseInt(chi.URLParam(r, "columnId"), 10, 64)
+	columnID, err := strconv.ParseInt(c.Params("columnId"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid column id")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid column id")
 	}
 
 	var req updateColumnRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 
 	tag, err := h.db.Exec(context.Background(),
@@ -660,26 +610,23 @@ func (h *Handler) UpdateProjectColumn(w http.ResponseWriter, r *http.Request) {
 		 WHERE id = $5 AND project_id = $6`,
 		req.Name, req.Color, req.WIPLimit, req.IsDone, columnID, projectID)
 	if err != nil || tag.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "column not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "column not found")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (h *Handler) DeleteProjectColumn(w http.ResponseWriter, r *http.Request) {
-	slug := chi.URLParam(r, "projectSlug")
-	claims := getClaims(r)
+func (h *Handler) DeleteProjectColumn(c *fiber.Ctx) error {
+	slug := c.Params("projectSlug")
+	claims := getClaims(c)
 
 	projectID, err := h.getProjectBySlug(context.Background(), slug, claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "project not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "project not found")
 	}
 
-	columnID, err := strconv.ParseInt(chi.URLParam(r, "columnId"), 10, 64)
+	columnID, err := strconv.ParseInt(c.Params("columnId"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid column id")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid column id")
 	}
 
 	// Refuse to delete a column that still contains items
@@ -687,46 +634,40 @@ func (h *Handler) DeleteProjectColumn(w http.ResponseWriter, r *http.Request) {
 	_ = h.db.QueryRow(context.Background(),
 		`SELECT COUNT(*) FROM project_items WHERE column_id = $1`, columnID).Scan(&itemCount)
 	if itemCount > 0 {
-		writeError(w, http.StatusConflict, "column still has items; move them before deleting")
-		return
+		return writeError(c, fiber.StatusConflict, "column still has items; move them before deleting")
 	}
 
 	tag, err := h.db.Exec(context.Background(),
 		`DELETE FROM project_columns WHERE id = $1 AND project_id = $2`, columnID, projectID)
 	if err != nil || tag.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "column not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "column not found")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (h *Handler) ReorderProjectColumns(w http.ResponseWriter, r *http.Request) {
-	slug := chi.URLParam(r, "projectSlug")
-	claims := getClaims(r)
+func (h *Handler) ReorderProjectColumns(c *fiber.Ctx) error {
+	slug := c.Params("projectSlug")
+	claims := getClaims(c)
 
 	projectID, err := h.getProjectBySlug(context.Background(), slug, claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "project not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "project not found")
 	}
 
 	var req struct {
 		ColumnIDs []int64 `json:"column_ids"`
 	}
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 	if len(req.ColumnIDs) == 0 {
-		writeError(w, http.StatusBadRequest, "column_ids is required")
-		return
+		return writeError(c, fiber.StatusBadRequest, "column_ids is required")
 	}
 
 	ctx := context.Background()
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to begin transaction")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to begin transaction")
 	}
 	defer tx.Rollback(ctx)
 
@@ -735,28 +676,25 @@ func (h *Handler) ReorderProjectColumns(w http.ResponseWriter, r *http.Request) 
 			`UPDATE project_columns SET position = $1 WHERE id = $2 AND project_id = $3`,
 			i, colID, projectID)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to reorder columns")
-			return
+			return writeError(c, fiber.StatusInternalServerError, "failed to reorder columns")
 		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to commit")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to commit")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
 // --- Swimlanes ---
 
-func (h *Handler) ListProjectSwimlanes(w http.ResponseWriter, r *http.Request) {
-	slug := chi.URLParam(r, "projectSlug")
-	claims := getClaims(r)
+func (h *Handler) ListProjectSwimlanes(c *fiber.Ctx) error {
+	slug := c.Params("projectSlug")
+	claims := getClaims(c)
 
 	projectID, err := h.getProjectBySlug(context.Background(), slug, claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "project not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "project not found")
 	}
 
 	rows, err := h.db.Query(context.Background(),
@@ -765,8 +703,7 @@ func (h *Handler) ListProjectSwimlanes(w http.ResponseWriter, r *http.Request) {
 		 WHERE project_id = $1
 		 ORDER BY position`, projectID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list swimlanes")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to list swimlanes")
 	}
 	defer rows.Close()
 
@@ -781,29 +718,26 @@ func (h *Handler) ListProjectSwimlanes(w http.ResponseWriter, r *http.Request) {
 	if swimlanes == nil {
 		swimlanes = []domain.ProjectSwimlane{}
 	}
-	writeJSON(w, http.StatusOK, swimlanes)
+	return writeJSON(c, fiber.StatusOK, swimlanes)
 }
 
-func (h *Handler) CreateProjectSwimlane(w http.ResponseWriter, r *http.Request) {
-	slug := chi.URLParam(r, "projectSlug")
-	claims := getClaims(r)
+func (h *Handler) CreateProjectSwimlane(c *fiber.Ctx) error {
+	slug := c.Params("projectSlug")
+	claims := getClaims(c)
 
 	projectID, err := h.getProjectBySlug(context.Background(), slug, claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "project not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "project not found")
 	}
 
 	var req struct {
 		Name string `json:"name"`
 	}
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 	if req.Name == "" {
-		writeError(w, http.StatusBadRequest, "name is required")
-		return
+		return writeError(c, fiber.StatusBadRequest, "name is required")
 	}
 
 	var maxPos int
@@ -818,35 +752,31 @@ func (h *Handler) CreateProjectSwimlane(w http.ResponseWriter, r *http.Request) 
 		projectID, req.Name, maxPos+1,
 	).Scan(&id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create swimlane")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to create swimlane")
 	}
-	writeJSON(w, http.StatusCreated, map[string]interface{}{"id": id})
+	return writeJSON(c, fiber.StatusCreated, map[string]interface{}{"id": id})
 }
 
-func (h *Handler) UpdateProjectSwimlane(w http.ResponseWriter, r *http.Request) {
-	slug := chi.URLParam(r, "projectSlug")
-	claims := getClaims(r)
+func (h *Handler) UpdateProjectSwimlane(c *fiber.Ctx) error {
+	slug := c.Params("projectSlug")
+	claims := getClaims(c)
 
 	projectID, err := h.getProjectBySlug(context.Background(), slug, claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "project not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "project not found")
 	}
 
-	swimlaneID, err := strconv.ParseInt(chi.URLParam(r, "swimlaneId"), 10, 64)
+	swimlaneID, err := strconv.ParseInt(c.Params("swimlaneId"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid swimlane id")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid swimlane id")
 	}
 
 	var req struct {
 		Name     *string `json:"name"`
 		Position *int    `json:"position"`
 	}
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 
 	tag, err := h.db.Exec(context.Background(),
@@ -856,34 +786,30 @@ func (h *Handler) UpdateProjectSwimlane(w http.ResponseWriter, r *http.Request) 
 		 WHERE id = $3 AND project_id = $4`,
 		req.Name, req.Position, swimlaneID, projectID)
 	if err != nil || tag.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "swimlane not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "swimlane not found")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (h *Handler) DeleteProjectSwimlane(w http.ResponseWriter, r *http.Request) {
-	slug := chi.URLParam(r, "projectSlug")
-	claims := getClaims(r)
+func (h *Handler) DeleteProjectSwimlane(c *fiber.Ctx) error {
+	slug := c.Params("projectSlug")
+	claims := getClaims(c)
 
 	projectID, err := h.getProjectBySlug(context.Background(), slug, claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "project not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "project not found")
 	}
 
-	swimlaneID, err := strconv.ParseInt(chi.URLParam(r, "swimlaneId"), 10, 64)
+	swimlaneID, err := strconv.ParseInt(c.Params("swimlaneId"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid swimlane id")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid swimlane id")
 	}
 
 	tag, err := h.db.Exec(context.Background(),
 		`DELETE FROM project_swimlanes WHERE id = $1 AND project_id = $2`,
 		swimlaneID, projectID)
 	if err != nil || tag.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "swimlane not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "swimlane not found")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }

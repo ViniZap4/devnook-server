@@ -4,16 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"log"
-	"net/http"
 	"sync"
 	"time"
 
-	"github.com/gorilla/websocket"
+	"github.com/fasthttp/websocket"
 )
-
-var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true },
-}
 
 // Event is a typed message sent over WebSocket.
 type Event struct {
@@ -288,15 +283,8 @@ func (h *Hub) GetOnlineUsernames() []string {
 	return usernames
 }
 
-// HandleWebSocket upgrades the HTTP connection. Requires ?token= query param for auth.
-// The auth validation is done by the caller who sets up the handler.
-func (h *Hub) HandleWebSocket(w http.ResponseWriter, r *http.Request, userID int64, username string) {
-	conn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		log.Printf("websocket upgrade error: %v", err)
-		return
-	}
-
+// HandleWebSocket takes a pre-upgraded gorilla/websocket connection.
+func (h *Hub) HandleWebSocket(conn *websocket.Conn, userID int64, username string) {
 	client := &Client{UserID: userID, Username: username, conn: conn, send: make(chan []byte, 256)}
 	h.register <- client
 

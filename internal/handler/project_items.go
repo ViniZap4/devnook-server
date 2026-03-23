@@ -3,13 +3,12 @@ package handler
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/ViniZap4/devnook-server/internal/domain"
-	"github.com/go-chi/chi/v5"
+	"github.com/gofiber/fiber/v2"
 )
 
 // itemColumns is the SELECT list for project_items with assignee username and column name via JOINs.
@@ -58,10 +57,10 @@ func parseOptionalDate(s *string) (*time.Time, error) {
 
 // requireProjectRole checks that userID holds one of the allowed roles in projectID.
 // It writes a 403 response and returns false if the check fails.
-func (h *Handler) requireProjectRole(w http.ResponseWriter, projectID, userID int64, allowed ...string) bool {
+func (h *Handler) requireProjectRole(c *fiber.Ctx, projectID, userID int64, allowed ...string) bool {
 	role, err := h.getProjectRole(context.Background(), projectID, userID)
 	if err != nil {
-		writeError(w, http.StatusForbidden, "access denied")
+		writeError(c, fiber.StatusForbidden, "access denied")
 		return false
 	}
 	for _, a := range allowed {
@@ -69,7 +68,7 @@ func (h *Handler) requireProjectRole(w http.ResponseWriter, projectID, userID in
 			return true
 		}
 	}
-	writeError(w, http.StatusForbidden, "insufficient permissions")
+	writeError(c, fiber.StatusForbidden, "insufficient permissions")
 	return false
 }
 
@@ -100,22 +99,20 @@ func (h *Handler) getProjectFull(slug string, userID int64) (domain.Project, err
 	return p, err
 }
 
-func (h *Handler) ListProjectItems(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	slug := chi.URLParam(r, "projectSlug")
+func (h *Handler) ListProjectItems(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	slug := c.Params("projectSlug")
 
 	project, err := h.getProjectFull(slug, claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "project not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "project not found")
 	}
 
-	q := r.URL.Query()
-	columnIDStr := q.Get("column_id")
-	sprintIDStr := q.Get("sprint_id")
-	assignee := q.Get("assignee")
-	itemType := q.Get("type")
-	priority := q.Get("priority")
+	columnIDStr := c.Query("column_id")
+	sprintIDStr := c.Query("sprint_id")
+	assignee := c.Query("assignee")
+	itemType := c.Query("type")
+	priority := c.Query("priority")
 
 	conditions := []string{"pi.project_id = $1"}
 	args := []any{project.ID}
@@ -158,8 +155,7 @@ func (h *Handler) ListProjectItems(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := h.db.Query(context.Background(), query, args...)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list items")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to list items")
 	}
 	defer rows.Close()
 
@@ -174,7 +170,7 @@ func (h *Handler) ListProjectItems(w http.ResponseWriter, r *http.Request) {
 	if items == nil {
 		items = []domain.ProjectItem{}
 	}
-	writeJSON(w, http.StatusOK, items)
+	return writeJSON(c, fiber.StatusOK, items)
 }
 
 type createItemRequest struct {
@@ -190,32 +186,28 @@ type createItemRequest struct {
 	DueDate     *string `json:"due_date,omitempty"`
 }
 
-func (h *Handler) CreateProjectItem(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	slug := chi.URLParam(r, "projectSlug")
+func (h *Handler) CreateProjectItem(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	slug := c.Params("projectSlug")
 
 	project, err := h.getProjectFull(slug, claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "project not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "project not found")
 	}
 
-	if !h.requireProjectRole(w, project.ID, claims.UserID, "owner", "admin", "member") {
-		return
+	if !h.requireProjectRole(c, project.ID, claims.UserID, "owner", "admin", "member") {
+		return nil
 	}
 
 	var req createItemRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 	if req.Title == "" {
-		writeError(w, http.StatusBadRequest, "title is required")
-		return
+		return writeError(c, fiber.StatusBadRequest, "title is required")
 	}
 	if req.ColumnID == 0 {
-		writeError(w, http.StatusBadRequest, "column_id is required")
-		return
+		return writeError(c, fiber.StatusBadRequest, "column_id is required")
 	}
 	if req.Type == "" {
 		req.Type = "task"
@@ -226,8 +218,7 @@ func (h *Handler) CreateProjectItem(w http.ResponseWriter, r *http.Request) {
 
 	dueDate, err := parseOptionalDate(req.DueDate)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid due_date format")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid due_date format")
 	}
 
 	var id int64
@@ -242,25 +233,22 @@ func (h *Handler) CreateProjectItem(w http.ResponseWriter, r *http.Request) {
 		req.AssigneeID, req.SprintID, req.IssueID, dueDate,
 	).Scan(&id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create item")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to create item")
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"id": id})
+	return writeJSON(c, fiber.StatusCreated, map[string]any{"id": id})
 }
 
-func (h *Handler) GetProjectItem(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	slug := chi.URLParam(r, "projectSlug")
-	itemID, err := strconv.ParseInt(chi.URLParam(r, "itemId"), 10, 64)
+func (h *Handler) GetProjectItem(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	slug := c.Params("projectSlug")
+	itemID, err := strconv.ParseInt(c.Params("itemId"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid item id")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid item id")
 	}
 
 	project, err := h.getProjectFull(slug, claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "project not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "project not found")
 	}
 
 	var it domain.ProjectItem
@@ -269,10 +257,9 @@ func (h *Handler) GetProjectItem(w http.ResponseWriter, r *http.Request) {
 		itemID, project.ID,
 	).Scan(scanItem(&it)...)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "item not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "item not found")
 	}
-	writeJSON(w, http.StatusOK, it)
+	return writeJSON(c, fiber.StatusOK, it)
 }
 
 type updateItemRequest struct {
@@ -286,29 +273,26 @@ type updateItemRequest struct {
 	DueDate     *string `json:"due_date,omitempty"`
 }
 
-func (h *Handler) UpdateProjectItem(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	slug := chi.URLParam(r, "projectSlug")
-	itemID, err := strconv.ParseInt(chi.URLParam(r, "itemId"), 10, 64)
+func (h *Handler) UpdateProjectItem(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	slug := c.Params("projectSlug")
+	itemID, err := strconv.ParseInt(c.Params("itemId"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid item id")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid item id")
 	}
 
 	project, err := h.getProjectFull(slug, claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "project not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "project not found")
 	}
 
-	if !h.requireProjectRole(w, project.ID, claims.UserID, "owner", "admin", "member") {
-		return
+	if !h.requireProjectRole(c, project.ID, claims.UserID, "owner", "admin", "member") {
+		return nil
 	}
 
 	var req updateItemRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 
 	ctx := context.Background()
@@ -357,8 +341,7 @@ func (h *Handler) UpdateProjectItem(w http.ResponseWriter, r *http.Request) {
 		} else {
 			t, err := parseOptionalDate(req.DueDate)
 			if err != nil {
-				writeError(w, http.StatusBadRequest, "invalid due_date format")
-				return
+				return writeError(c, fiber.StatusBadRequest, "invalid due_date format")
 			}
 			sets = append(sets, fmt.Sprintf("due_date=$%d", argN))
 			args = append(args, t)
@@ -367,8 +350,7 @@ func (h *Handler) UpdateProjectItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(sets) == 0 {
-		w.WriteHeader(http.StatusNoContent)
-		return
+		return c.SendStatus(fiber.StatusNoContent)
 	}
 
 	sets = append(sets, "updated_at=NOW()")
@@ -378,29 +360,26 @@ func (h *Handler) UpdateProjectItem(w http.ResponseWriter, r *http.Request) {
 
 	tag, err := h.db.Exec(ctx, query, args...)
 	if err != nil || tag.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "item not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "item not found")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (h *Handler) DeleteProjectItem(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	slug := chi.URLParam(r, "projectSlug")
-	itemID, err := strconv.ParseInt(chi.URLParam(r, "itemId"), 10, 64)
+func (h *Handler) DeleteProjectItem(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	slug := c.Params("projectSlug")
+	itemID, err := strconv.ParseInt(c.Params("itemId"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid item id")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid item id")
 	}
 
 	project, err := h.getProjectFull(slug, claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "project not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "project not found")
 	}
 
-	if !h.requireProjectRole(w, project.ID, claims.UserID, "owner", "admin") {
-		return
+	if !h.requireProjectRole(c, project.ID, claims.UserID, "owner", "admin") {
+		return nil
 	}
 
 	tag, err := h.db.Exec(context.Background(),
@@ -408,10 +387,9 @@ func (h *Handler) DeleteProjectItem(w http.ResponseWriter, r *http.Request) {
 		itemID, project.ID,
 	)
 	if err != nil || tag.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "item not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "item not found")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
 type moveItemRequest struct {
@@ -420,33 +398,29 @@ type moveItemRequest struct {
 	SwimlaneID *int64 `json:"swimlane_id,omitempty"`
 }
 
-func (h *Handler) MoveProjectItem(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	slug := chi.URLParam(r, "projectSlug")
-	itemID, err := strconv.ParseInt(chi.URLParam(r, "itemId"), 10, 64)
+func (h *Handler) MoveProjectItem(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	slug := c.Params("projectSlug")
+	itemID, err := strconv.ParseInt(c.Params("itemId"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid item id")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid item id")
 	}
 
 	project, err := h.getProjectFull(slug, claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "project not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "project not found")
 	}
 
-	if !h.requireProjectRole(w, project.ID, claims.UserID, "owner", "admin", "member") {
-		return
+	if !h.requireProjectRole(c, project.ID, claims.UserID, "owner", "admin", "member") {
+		return nil
 	}
 
 	var req moveItemRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 	if req.ColumnID == 0 {
-		writeError(w, http.StatusBadRequest, "column_id is required")
-		return
+		return writeError(c, fiber.StatusBadRequest, "column_id is required")
 	}
 
 	ctx := context.Background()
@@ -461,8 +435,7 @@ func (h *Handler) MoveProjectItem(w http.ResponseWriter, r *http.Request) {
 		itemID, project.ID,
 	).Scan(&oldColumnID, &oldColumnName)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "item not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "item not found")
 	}
 
 	// Determine whether the new column is a done column.
@@ -473,8 +446,7 @@ func (h *Handler) MoveProjectItem(w http.ResponseWriter, r *http.Request) {
 		req.ColumnID, project.ID,
 	).Scan(&newIsDone, &newColumnName)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "target column not found in project")
-		return
+		return writeError(c, fiber.StatusBadRequest, "target column not found in project")
 	}
 
 	// Build the UPDATE statement.
@@ -516,8 +488,7 @@ func (h *Handler) MoveProjectItem(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = completedAt // used via SQL NOW() above
 	if err != nil || tag.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "item not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "item not found")
 	}
 
 	// Record in project_item_history if column changed.
@@ -529,22 +500,20 @@ func (h *Handler) MoveProjectItem(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (h *Handler) GetProjectItemHistory(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	slug := chi.URLParam(r, "projectSlug")
-	itemID, err := strconv.ParseInt(chi.URLParam(r, "itemId"), 10, 64)
+func (h *Handler) GetProjectItemHistory(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	slug := c.Params("projectSlug")
+	itemID, err := strconv.ParseInt(c.Params("itemId"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid item id")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid item id")
 	}
 
 	project, err := h.getProjectFull(slug, claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "project not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "project not found")
 	}
 
 	// Verify the item belongs to this project.
@@ -554,8 +523,7 @@ func (h *Handler) GetProjectItemHistory(w http.ResponseWriter, r *http.Request) 
 		itemID, project.ID,
 	).Scan(&exists)
 	if !exists {
-		writeError(w, http.StatusNotFound, "item not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "item not found")
 	}
 
 	rows, err := h.db.Query(context.Background(),
@@ -567,8 +535,7 @@ func (h *Handler) GetProjectItemHistory(w http.ResponseWriter, r *http.Request) 
 		itemID,
 	)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list history")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to list history")
 	}
 	defer rows.Close()
 
@@ -586,7 +553,7 @@ func (h *Handler) GetProjectItemHistory(w http.ResponseWriter, r *http.Request) 
 	if history == nil {
 		history = []domain.ProjectItemHistory{}
 	}
-	writeJSON(w, http.StatusOK, history)
+	return writeJSON(c, fiber.StatusOK, history)
 }
 
 type boardColumn struct {
@@ -595,20 +562,19 @@ type boardColumn struct {
 }
 
 type boardResponse struct {
-	Project      domain.Project          `json:"project"`
-	Columns      []boardColumn           `json:"columns"`
+	Project      domain.Project           `json:"project"`
+	Columns      []boardColumn            `json:"columns"`
 	Swimlanes    []domain.ProjectSwimlane `json:"swimlanes"`
-	ActiveSprint *domain.ProjectSprint   `json:"active_sprint"`
+	ActiveSprint *domain.ProjectSprint    `json:"active_sprint"`
 }
 
-func (h *Handler) GetProjectBoard(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	slug := chi.URLParam(r, "projectSlug")
+func (h *Handler) GetProjectBoard(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	slug := c.Params("projectSlug")
 
 	project, err := h.getProjectFull(slug, claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "project not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "project not found")
 	}
 
 	ctx := context.Background()
@@ -625,8 +591,7 @@ func (h *Handler) GetProjectBoard(w http.ResponseWriter, r *http.Request) {
 		project.ID,
 	)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to load columns")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to load columns")
 	}
 	defer colRows.Close()
 
@@ -651,8 +616,7 @@ func (h *Handler) GetProjectBoard(w http.ResponseWriter, r *http.Request) {
 		project.ID,
 	)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to load items")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to load items")
 	}
 	defer itemRows.Close()
 
@@ -676,8 +640,7 @@ func (h *Handler) GetProjectBoard(w http.ResponseWriter, r *http.Request) {
 		project.ID,
 	)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to load swimlanes")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to load swimlanes")
 	}
 	defer swRows.Close()
 
@@ -709,7 +672,7 @@ func (h *Handler) GetProjectBoard(w http.ResponseWriter, r *http.Request) {
 		columns = []boardColumn{}
 	}
 
-	writeJSON(w, http.StatusOK, boardResponse{
+	return writeJSON(c, fiber.StatusOK, boardResponse{
 		Project:      project,
 		Columns:      columns,
 		Swimlanes:    swimlanes,

@@ -2,18 +2,17 @@ package handler
 
 import (
 	"context"
-	"net/http"
 	"strconv"
 
 	"github.com/ViniZap4/devnook-server/internal/domain"
-	"github.com/go-chi/chi/v5"
+	"github.com/gofiber/fiber/v2"
 )
 
-func (h *Handler) GetFeed(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
+func (h *Handler) GetFeed(c *fiber.Ctx) error {
+	claims := getClaims(c)
 	ctx := context.Background()
 
-	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	page, _ := strconv.Atoi(c.Query("page"))
 	if page < 1 {
 		page = 1
 	}
@@ -34,8 +33,7 @@ func (h *Handler) GetFeed(w http.ResponseWriter, r *http.Request) {
 		 ORDER BY p.created_at DESC
 		 LIMIT $2 OFFSET $3`, claims.UserID, perPage, offset)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to load feed")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to load feed")
 	}
 	defer rows.Close()
 
@@ -57,16 +55,16 @@ func (h *Handler) GetFeed(w http.ResponseWriter, r *http.Request) {
 	var total int
 	h.db.QueryRow(ctx, `SELECT COUNT(*) FROM posts`).Scan(&total)
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	return writeJSON(c, fiber.StatusOK, map[string]any{
 		"posts":       posts,
 		"total_count": total,
 		"page":        page,
 	})
 }
 
-func (h *Handler) GetPost(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+func (h *Handler) GetPost(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	id, _ := strconv.ParseInt(c.Params("id"), 10, 64)
 
 	var p domain.Post
 	err := h.db.QueryRow(context.Background(),
@@ -85,17 +83,16 @@ func (h *Handler) GetPost(w http.ResponseWriter, r *http.Request) {
 		&p.IssueNumber, &p.OrgName, &p.Tags, &p.CreatedAt, &p.UpdatedAt,
 		&p.LikesCount, &p.CommentsCount, &p.RepostsCount, &p.Liked, &p.Reposted)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "post not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "post not found")
 	}
 	if p.Tags == nil {
 		p.Tags = []string{}
 	}
-	writeJSON(w, http.StatusOK, p)
+	return writeJSON(c, fiber.StatusOK, p)
 }
 
-func (h *Handler) CreatePost(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
+func (h *Handler) CreatePost(c *fiber.Ctx) error {
+	claims := getClaims(c)
 	var req struct {
 		Content     string   `json:"content"`
 		Type        string   `json:"type"`
@@ -105,13 +102,11 @@ func (h *Handler) CreatePost(w http.ResponseWriter, r *http.Request) {
 		IssueNumber *int     `json:"issue_number"`
 		Tags        []string `json:"tags"`
 	}
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 	if req.Content == "" {
-		writeError(w, http.StatusBadRequest, "content is required")
-		return
+		return writeError(c, fiber.StatusBadRequest, "content is required")
 	}
 	if req.Type == "" {
 		req.Type = "text"
@@ -127,23 +122,21 @@ func (h *Handler) CreatePost(w http.ResponseWriter, r *http.Request) {
 		claims.UserID, req.Content, req.Type, req.RepoOwner, req.RepoName, req.CommitHash, req.IssueNumber, req.Tags,
 	).Scan(&id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create post")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to create post")
 	}
-	writeJSON(w, http.StatusCreated, map[string]int64{"id": id})
+	return writeJSON(c, fiber.StatusCreated, map[string]int64{"id": id})
 }
 
-func (h *Handler) UpdatePost(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+func (h *Handler) UpdatePost(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	id, _ := strconv.ParseInt(c.Params("id"), 10, 64)
 
 	var req struct {
 		Content string   `json:"content"`
 		Tags    []string `json:"tags"`
 	}
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 	if req.Tags == nil {
 		req.Tags = []string{}
@@ -153,66 +146,62 @@ func (h *Handler) UpdatePost(w http.ResponseWriter, r *http.Request) {
 		`UPDATE posts SET content=$1, tags=$2, updated_at=NOW() WHERE id=$3 AND author_id=$4`,
 		req.Content, req.Tags, id, claims.UserID)
 	if err != nil || tag.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "post not found or not yours")
-		return
+		return writeError(c, fiber.StatusNotFound, "post not found or not yours")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (h *Handler) DeletePost(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+func (h *Handler) DeletePost(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	id, _ := strconv.ParseInt(c.Params("id"), 10, 64)
 
 	tag, err := h.db.Exec(context.Background(),
 		`DELETE FROM posts WHERE id=$1 AND author_id=$2`, id, claims.UserID)
 	if err != nil || tag.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "post not found or not yours")
-		return
+		return writeError(c, fiber.StatusNotFound, "post not found or not yours")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (h *Handler) LikePost(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+func (h *Handler) LikePost(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	id, _ := strconv.ParseInt(c.Params("id"), 10, 64)
 
 	_, err := h.db.Exec(context.Background(),
 		`INSERT INTO post_likes (user_id, post_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
 		claims.UserID, id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to like")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to like")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (h *Handler) UnlikePost(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+func (h *Handler) UnlikePost(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	id, _ := strconv.ParseInt(c.Params("id"), 10, 64)
 
 	h.db.Exec(context.Background(),
 		`DELETE FROM post_likes WHERE user_id=$1 AND post_id=$2`, claims.UserID, id)
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (h *Handler) RepostPost(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+func (h *Handler) RepostPost(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	id, _ := strconv.ParseInt(c.Params("id"), 10, 64)
 
 	_, err := h.db.Exec(context.Background(),
 		`INSERT INTO post_reposts (user_id, post_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
 		claims.UserID, id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to repost")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to repost")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (h *Handler) GetPostComments(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
+func (h *Handler) GetPostComments(c *fiber.Ctx) error {
+	claims := getClaims(c)
 	_ = claims // reserved for liked check
-	id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	id, _ := strconv.ParseInt(c.Params("id"), 10, 64)
 
 	rows, err := h.db.Query(context.Background(),
 		`SELECT c.id, c.post_id, c.author_id, u.username, u.full_name, c.content, c.created_at
@@ -221,8 +210,7 @@ func (h *Handler) GetPostComments(w http.ResponseWriter, r *http.Request) {
 		 WHERE c.post_id = $1
 		 ORDER BY c.created_at ASC`, id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to get comments")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to get comments")
 	}
 	defer rows.Close()
 
@@ -235,19 +223,18 @@ func (h *Handler) GetPostComments(w http.ResponseWriter, r *http.Request) {
 		}
 		comments = append(comments, c)
 	}
-	writeJSON(w, http.StatusOK, comments)
+	return writeJSON(c, fiber.StatusOK, comments)
 }
 
-func (h *Handler) AddPostComment(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	postID, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+func (h *Handler) AddPostComment(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	postID, _ := strconv.ParseInt(c.Params("id"), 10, 64)
 
 	var req struct {
 		Content string `json:"content"`
 	}
-	if err := readJSON(r, &req); err != nil || req.Content == "" {
-		writeError(w, http.StatusBadRequest, "content is required")
-		return
+	if err := readJSON(c, &req); err != nil || req.Content == "" {
+		return writeError(c, fiber.StatusBadRequest, "content is required")
 	}
 
 	var id int64
@@ -255,26 +242,25 @@ func (h *Handler) AddPostComment(w http.ResponseWriter, r *http.Request) {
 		`INSERT INTO post_comments (post_id, author_id, content) VALUES ($1, $2, $3) RETURNING id`,
 		postID, claims.UserID, req.Content).Scan(&id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to add comment")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to add comment")
 	}
-	writeJSON(w, http.StatusCreated, map[string]int64{"id": id})
+	return writeJSON(c, fiber.StatusCreated, map[string]int64{"id": id})
 }
 
-func (h *Handler) RemovePostComment(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	commentID, _ := strconv.ParseInt(chi.URLParam(r, "commentId"), 10, 64)
+func (h *Handler) RemovePostComment(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	commentID, _ := strconv.ParseInt(c.Params("commentId"), 10, 64)
 
 	h.db.Exec(context.Background(),
 		`DELETE FROM post_comments WHERE id=$1 AND author_id=$2`, commentID, claims.UserID)
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (h *Handler) GetUserPosts(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	username := chi.URLParam(r, "username")
+func (h *Handler) GetUserPosts(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	username := c.Params("username")
 
-	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	page, _ := strconv.Atoi(c.Query("page"))
 	if page < 1 {
 		page = 1
 	}
@@ -295,8 +281,7 @@ func (h *Handler) GetUserPosts(w http.ResponseWriter, r *http.Request) {
 		 ORDER BY p.created_at DESC
 		 LIMIT $3 OFFSET $4`, claims.UserID, username, perPage, offset)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to load posts")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to load posts")
 	}
 	defer rows.Close()
 
@@ -320,7 +305,7 @@ func (h *Handler) GetUserPosts(w http.ResponseWriter, r *http.Request) {
 		`SELECT COUNT(*) FROM posts p JOIN users u ON u.id = p.author_id WHERE u.username = $1`,
 		username).Scan(&total)
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	return writeJSON(c, fiber.StatusOK, map[string]any{
 		"posts":       posts,
 		"total_count": total,
 	})

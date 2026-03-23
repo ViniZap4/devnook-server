@@ -2,14 +2,13 @@ package handler
 
 import (
 	"context"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"github.com/ViniZap4/devnook-server/internal/domain"
-	"github.com/go-chi/chi/v5"
+	"github.com/gofiber/fiber/v2"
 )
 
 type createOrgRequest struct {
@@ -28,17 +27,15 @@ type addMemberRequest struct {
 	Role     string `json:"role"`
 }
 
-func (h *Handler) CreateOrg(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
+func (h *Handler) CreateOrg(c *fiber.Ctx) error {
+	claims := getClaims(c)
 	var req createOrgRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 	req.Name = strings.TrimSpace(req.Name)
 	if req.Name == "" {
-		writeError(w, http.StatusBadRequest, "name is required")
-		return
+		return writeError(c, fiber.StatusBadRequest, "name is required")
 	}
 
 	// Check name doesn't collide with usernames
@@ -47,15 +44,13 @@ func (h *Handler) CreateOrg(w http.ResponseWriter, r *http.Request) {
 		`SELECT EXISTS(SELECT 1 FROM users WHERE username = $1)`, req.Name,
 	).Scan(&exists)
 	if exists {
-		writeError(w, http.StatusConflict, "name already taken by a user")
-		return
+		return writeError(c, fiber.StatusConflict, "name already taken by a user")
 	}
 
 	ctx := context.Background()
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to begin transaction")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to begin transaction")
 	}
 	defer tx.Rollback(ctx)
 
@@ -66,8 +61,7 @@ func (h *Handler) CreateOrg(w http.ResponseWriter, r *http.Request) {
 		req.Name, req.DisplayName, req.Description,
 	).Scan(&orgID)
 	if err != nil {
-		writeError(w, http.StatusConflict, "organization name already exists")
-		return
+		return writeError(c, fiber.StatusConflict, "organization name already exists")
 	}
 
 	// Creator becomes owner
@@ -76,20 +70,18 @@ func (h *Handler) CreateOrg(w http.ResponseWriter, r *http.Request) {
 		orgID, claims.UserID,
 	)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to add owner")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to add owner")
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to commit")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to commit")
 	}
 
-	writeJSON(w, http.StatusCreated, map[string]interface{}{"id": orgID, "name": req.Name})
+	return writeJSON(c, fiber.StatusCreated, map[string]interface{}{"id": orgID, "name": req.Name})
 }
 
-func (h *Handler) ListOrgs(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
+func (h *Handler) ListOrgs(c *fiber.Ctx) error {
+	claims := getClaims(c)
 	rows, err := h.db.Query(context.Background(),
 		`SELECT o.id, o.name, o.display_name, o.description, o.avatar_url, o.location, o.website, o.created_at, o.updated_at
 		 FROM organizations o
@@ -97,8 +89,7 @@ func (h *Handler) ListOrgs(w http.ResponseWriter, r *http.Request) {
 		 WHERE m.user_id = $1
 		 ORDER BY o.name`, claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list orgs")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to list orgs")
 	}
 	defer rows.Close()
 
@@ -113,36 +104,33 @@ func (h *Handler) ListOrgs(w http.ResponseWriter, r *http.Request) {
 	if orgs == nil {
 		orgs = []domain.Organization{}
 	}
-	writeJSON(w, http.StatusOK, orgs)
+	return writeJSON(c, fiber.StatusOK, orgs)
 }
 
-func (h *Handler) GetOrg(w http.ResponseWriter, r *http.Request) {
-	name := chi.URLParam(r, "name")
+func (h *Handler) GetOrg(c *fiber.Ctx) error {
+	name := c.Params("name")
 	var o domain.Organization
 	err := h.db.QueryRow(context.Background(),
 		`SELECT id, name, display_name, description, avatar_url, location, website, created_at, updated_at
 		 FROM organizations WHERE name = $1`, name,
 	).Scan(&o.ID, &o.Name, &o.DisplayName, &o.Description, &o.AvatarURL, &o.Location, &o.Website, &o.CreatedAt, &o.UpdatedAt)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "organization not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "organization not found")
 	}
-	writeJSON(w, http.StatusOK, o)
+	return writeJSON(c, fiber.StatusOK, o)
 }
 
-func (h *Handler) UpdateOrg(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	name := chi.URLParam(r, "name")
+func (h *Handler) UpdateOrg(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	name := c.Params("name")
 
 	if !h.isOrgOwner(claims.UserID, name) {
-		writeError(w, http.StatusForbidden, "not an owner of this organization")
-		return
+		return writeError(c, fiber.StatusForbidden, "not an owner of this organization")
 	}
 
 	var req updateOrgRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 
 	tag, err := h.db.Exec(context.Background(),
@@ -150,32 +138,29 @@ func (h *Handler) UpdateOrg(w http.ResponseWriter, r *http.Request) {
 		 WHERE name=$3`,
 		req.DisplayName, req.Description, name)
 	if err != nil || tag.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "organization not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "organization not found")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (h *Handler) DeleteOrg(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	name := chi.URLParam(r, "name")
+func (h *Handler) DeleteOrg(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	name := c.Params("name")
 
 	if !h.isOrgOwner(claims.UserID, name) {
-		writeError(w, http.StatusForbidden, "not an owner of this organization")
-		return
+		return writeError(c, fiber.StatusForbidden, "not an owner of this organization")
 	}
 
 	tag, err := h.db.Exec(context.Background(),
 		`DELETE FROM organizations WHERE name = $1`, name)
 	if err != nil || tag.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "organization not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "organization not found")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (h *Handler) ListOrgMembers(w http.ResponseWriter, r *http.Request) {
-	name := chi.URLParam(r, "name")
+func (h *Handler) ListOrgMembers(c *fiber.Ctx) error {
+	name := c.Params("name")
 	rows, err := h.db.Query(context.Background(),
 		`SELECT m.id, m.org_id, m.user_id, u.username, u.full_name, m.role, m.joined_at
 		 FROM org_members m
@@ -184,8 +169,7 @@ func (h *Handler) ListOrgMembers(w http.ResponseWriter, r *http.Request) {
 		 WHERE o.name = $1
 		 ORDER BY m.joined_at`, name)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list members")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to list members")
 	}
 	defer rows.Close()
 
@@ -200,22 +184,20 @@ func (h *Handler) ListOrgMembers(w http.ResponseWriter, r *http.Request) {
 	if members == nil {
 		members = []domain.OrgMember{}
 	}
-	writeJSON(w, http.StatusOK, members)
+	return writeJSON(c, fiber.StatusOK, members)
 }
 
-func (h *Handler) AddOrgMember(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	name := chi.URLParam(r, "name")
+func (h *Handler) AddOrgMember(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	name := c.Params("name")
 
 	if !h.isOrgOwner(claims.UserID, name) {
-		writeError(w, http.StatusForbidden, "not an owner of this organization")
-		return
+		return writeError(c, fiber.StatusForbidden, "not an owner of this organization")
 	}
 
 	var req addMemberRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 	if req.Role == "" {
 		req.Role = "member"
@@ -226,8 +208,7 @@ func (h *Handler) AddOrgMember(w http.ResponseWriter, r *http.Request) {
 		`SELECT id FROM users WHERE username = $1`, req.Username,
 	).Scan(&userID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "user not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "user not found")
 	}
 
 	var orgID int64
@@ -235,8 +216,7 @@ func (h *Handler) AddOrgMember(w http.ResponseWriter, r *http.Request) {
 		`SELECT id FROM organizations WHERE name = $1`, name,
 	).Scan(&orgID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "organization not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "organization not found")
 	}
 
 	_, err = h.db.Exec(context.Background(),
@@ -245,28 +225,25 @@ func (h *Handler) AddOrgMember(w http.ResponseWriter, r *http.Request) {
 		orgID, userID, req.Role,
 	)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to add member")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to add member")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (h *Handler) UpdateOrgMember(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	orgName := chi.URLParam(r, "name")
-	username := chi.URLParam(r, "username")
+func (h *Handler) UpdateOrgMember(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	orgName := c.Params("name")
+	username := c.Params("username")
 
 	if !h.isOrgOwner(claims.UserID, orgName) {
-		writeError(w, http.StatusForbidden, "not an owner of this organization")
-		return
+		return writeError(c, fiber.StatusForbidden, "not an owner of this organization")
 	}
 
 	var req struct {
 		Role string `json:"role"`
 	}
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 
 	tag, err := h.db.Exec(context.Background(),
@@ -276,20 +253,18 @@ func (h *Handler) UpdateOrgMember(w http.ResponseWriter, r *http.Request) {
 		req.Role, username, orgName,
 	)
 	if err != nil || tag.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "member not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "member not found")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (h *Handler) RemoveOrgMember(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	orgName := chi.URLParam(r, "name")
-	username := chi.URLParam(r, "username")
+func (h *Handler) RemoveOrgMember(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	orgName := c.Params("name")
+	username := c.Params("username")
 
 	if !h.isOrgOwner(claims.UserID, orgName) {
-		writeError(w, http.StatusForbidden, "not an owner of this organization")
-		return
+		return writeError(c, fiber.StatusForbidden, "not an owner of this organization")
 	}
 
 	tag, err := h.db.Exec(context.Background(),
@@ -299,14 +274,13 @@ func (h *Handler) RemoveOrgMember(w http.ResponseWriter, r *http.Request) {
 		username, orgName,
 	)
 	if err != nil || tag.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "member not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "member not found")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (h *Handler) ListOrgRepos(w http.ResponseWriter, r *http.Request) {
-	name := chi.URLParam(r, "name")
+func (h *Handler) ListOrgRepos(c *fiber.Ctx) error {
+	name := c.Params("name")
 
 	rows, err := h.db.Query(context.Background(),
 		`SELECT r.id, r.owner_id, o.name, r.name, r.description, r.is_private, r.default_branch, r.org_id, r.created_at, r.updated_at
@@ -315,8 +289,7 @@ func (h *Handler) ListOrgRepos(w http.ResponseWriter, r *http.Request) {
 		 WHERE o.name = $1
 		 ORDER BY r.updated_at DESC`, name)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list repos")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to list repos")
 	}
 	defer rows.Close()
 
@@ -332,12 +305,12 @@ func (h *Handler) ListOrgRepos(w http.ResponseWriter, r *http.Request) {
 	if repos == nil {
 		repos = []domain.Repository{}
 	}
-	writeJSON(w, http.StatusOK, repos)
+	return writeJSON(c, fiber.StatusOK, repos)
 }
 
-func (h *Handler) CreateOrgRepo(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	orgName := chi.URLParam(r, "name")
+func (h *Handler) CreateOrgRepo(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	orgName := c.Params("name")
 
 	// Check membership
 	var orgID int64
@@ -347,18 +320,15 @@ func (h *Handler) CreateOrgRepo(w http.ResponseWriter, r *http.Request) {
 		 WHERE o.name = $1 AND m.user_id = $2`, orgName, claims.UserID,
 	).Scan(&orgID)
 	if err != nil {
-		writeError(w, http.StatusForbidden, "not a member of this organization")
-		return
+		return writeError(c, fiber.StatusForbidden, "not a member of this organization")
 	}
 
 	var req createRepoRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 	if req.Name == "" {
-		writeError(w, http.StatusBadRequest, "name is required")
-		return
+		return writeError(c, fiber.StatusBadRequest, "name is required")
 	}
 
 	var repoID int64
@@ -368,23 +338,20 @@ func (h *Handler) CreateOrgRepo(w http.ResponseWriter, r *http.Request) {
 		claims.UserID, req.Name, req.Description, req.IsPrivate, orgID,
 	).Scan(&repoID)
 	if err != nil {
-		writeError(w, http.StatusConflict, "repository already exists")
-		return
+		return writeError(c, fiber.StatusConflict, "repository already exists")
 	}
 
 	// Initialize bare git repo under org name
 	repoPath := filepath.Join(h.cfg.ReposPath, orgName, req.Name+".git")
 	if err := os.MkdirAll(repoPath, 0o755); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create repo directory")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to create repo directory")
 	}
 	cmd := exec.Command("git", "init", "--bare", repoPath)
 	if err := cmd.Run(); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to initialize git repo")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to initialize git repo")
 	}
 
-	writeJSON(w, http.StatusCreated, map[string]interface{}{"id": repoID, "name": req.Name})
+	return writeJSON(c, fiber.StatusCreated, map[string]interface{}{"id": repoID, "name": req.Name})
 }
 
 func (h *Handler) isOrgOwner(userID int64, orgName string) bool {

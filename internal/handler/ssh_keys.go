@@ -5,12 +5,11 @@ import (
 	"crypto/md5"
 	"encoding/base64"
 	"fmt"
-	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/ViniZap4/devnook-server/internal/domain"
-	"github.com/go-chi/chi/v5"
+	"github.com/gofiber/fiber/v2"
 )
 
 type sshKeyRequest struct {
@@ -18,15 +17,14 @@ type sshKeyRequest struct {
 	Content string `json:"content"`
 }
 
-func (h *Handler) ListSSHKeys(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
+func (h *Handler) ListSSHKeys(c *fiber.Ctx) error {
+	claims := getClaims(c)
 
 	rows, err := h.db.Query(context.Background(),
 		`SELECT id, user_id, name, fingerprint, content, created_at
 		 FROM ssh_keys WHERE user_id = $1 ORDER BY created_at DESC`, claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list SSH keys")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to list SSH keys")
 	}
 	defer rows.Close()
 
@@ -41,26 +39,23 @@ func (h *Handler) ListSSHKeys(w http.ResponseWriter, r *http.Request) {
 	if keys == nil {
 		keys = []domain.SSHKey{}
 	}
-	writeJSON(w, http.StatusOK, keys)
+	return writeJSON(c, fiber.StatusOK, keys)
 }
 
-func (h *Handler) CreateSSHKey(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
+func (h *Handler) CreateSSHKey(c *fiber.Ctx) error {
+	claims := getClaims(c)
 
 	var req sshKeyRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 	if req.Name == "" || req.Content == "" {
-		writeError(w, http.StatusBadRequest, "name and content are required")
-		return
+		return writeError(c, fiber.StatusBadRequest, "name and content are required")
 	}
 
 	fingerprint := computeSSHFingerprint(req.Content)
 	if fingerprint == "" {
-		writeError(w, http.StatusBadRequest, "invalid SSH key format")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid SSH key format")
 	}
 
 	var id int64
@@ -69,27 +64,24 @@ func (h *Handler) CreateSSHKey(w http.ResponseWriter, r *http.Request) {
 		claims.UserID, req.Name, fingerprint, strings.TrimSpace(req.Content),
 	).Scan(&id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to add SSH key")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to add SSH key")
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"id": id, "fingerprint": fingerprint})
+	return writeJSON(c, fiber.StatusCreated, map[string]any{"id": id, "fingerprint": fingerprint})
 }
 
-func (h *Handler) DeleteSSHKey(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+func (h *Handler) DeleteSSHKey(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	id, err := strconv.ParseInt(c.Params("id"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid key id")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid key id")
 	}
 
 	tag, err := h.db.Exec(context.Background(),
 		`DELETE FROM ssh_keys WHERE id = $1 AND user_id = $2`, id, claims.UserID)
 	if err != nil || tag.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "SSH key not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "SSH key not found")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
 func computeSSHFingerprint(pubkey string) string {

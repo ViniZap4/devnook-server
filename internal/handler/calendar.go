@@ -2,19 +2,18 @@ package handler
 
 import (
 	"context"
-	"net/http"
 	"sort"
 	"strconv"
 	"time"
 
 	"github.com/ViniZap4/devnook-server/internal/domain"
-	"github.com/go-chi/chi/v5"
+	"github.com/gofiber/fiber/v2"
 )
 
 // --- calendar_events CRUD ---
 
-func (h *Handler) ListCalendarEvents(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
+func (h *Handler) ListCalendarEvents(c *fiber.Ctx) error {
+	claims := getClaims(c)
 	ctx := context.Background()
 
 	args := []any{claims.UserID}
@@ -25,21 +24,21 @@ func (h *Handler) ListCalendarEvents(w http.ResponseWriter, r *http.Request) {
 	          WHERE user_id = $1`
 	argIdx := 2
 
-	if s := r.URL.Query().Get("start"); s != "" {
+	if s := c.Query("start"); s != "" {
 		if t, err := time.Parse(time.RFC3339, s); err == nil {
 			query += " AND start_time >= $" + strconv.Itoa(argIdx)
 			args = append(args, t)
 			argIdx++
 		}
 	}
-	if e := r.URL.Query().Get("end"); e != "" {
+	if e := c.Query("end"); e != "" {
 		if t, err := time.Parse(time.RFC3339, e); err == nil {
 			query += " AND start_time <= $" + strconv.Itoa(argIdx)
 			args = append(args, t)
 			argIdx++
 		}
 	}
-	if typ := r.URL.Query().Get("type"); typ != "" {
+	if typ := c.Query("type"); typ != "" {
 		query += " AND type = $" + strconv.Itoa(argIdx)
 		args = append(args, typ)
 		argIdx++
@@ -49,8 +48,7 @@ func (h *Handler) ListCalendarEvents(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list calendar events")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to list calendar events")
 	}
 	defer rows.Close()
 
@@ -68,7 +66,7 @@ func (h *Handler) ListCalendarEvents(w http.ResponseWriter, r *http.Request) {
 		e.Attendees = []domain.EventAttendee{}
 		events = append(events, e)
 	}
-	writeJSON(w, http.StatusOK, events)
+	return writeJSON(c, fiber.StatusOK, events)
 }
 
 type calendarEventRequest struct {
@@ -88,35 +86,30 @@ type calendarEventRequest struct {
 	Attendees      []string `json:"attendees"`
 }
 
-func (h *Handler) CreateCalendarEvent(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
+func (h *Handler) CreateCalendarEvent(c *fiber.Ctx) error {
+	claims := getClaims(c)
 	ctx := context.Background()
 
 	var req calendarEventRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 	if req.Title == "" {
-		writeError(w, http.StatusBadRequest, "title is required")
-		return
+		return writeError(c, fiber.StatusBadRequest, "title is required")
 	}
 	if req.StartTime == "" {
-		writeError(w, http.StatusBadRequest, "start_time is required")
-		return
+		return writeError(c, fiber.StatusBadRequest, "start_time is required")
 	}
 
 	startTime, err := time.Parse(time.RFC3339, req.StartTime)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid start_time format, use RFC3339")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid start_time format, use RFC3339")
 	}
 	var endTime *time.Time
 	if req.EndTime != "" {
 		t, err := time.Parse(time.RFC3339, req.EndTime)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid end_time format, use RFC3339")
-			return
+			return writeError(c, fiber.StatusBadRequest, "invalid end_time format, use RFC3339")
 		}
 		endTime = &t
 	}
@@ -128,8 +121,7 @@ func (h *Handler) CreateCalendarEvent(w http.ResponseWriter, r *http.Request) {
 
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to begin transaction")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to begin transaction")
 	}
 	defer tx.Rollback(ctx)
 
@@ -145,8 +137,7 @@ func (h *Handler) CreateCalendarEvent(w http.ResponseWriter, r *http.Request) {
 		req.ProjectID, req.SprintID, req.MilestoneID, req.IssueID, req.ConversationID,
 	).Scan(&id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create calendar event")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to create calendar event")
 	}
 
 	for _, username := range req.Attendees {
@@ -161,20 +152,18 @@ func (h *Handler) CreateCalendarEvent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to commit transaction")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to commit transaction")
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"id": id})
+	return writeJSON(c, fiber.StatusCreated, map[string]any{"id": id})
 }
 
-func (h *Handler) GetCalendarEvent(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
+func (h *Handler) GetCalendarEvent(c *fiber.Ctx) error {
+	claims := getClaims(c)
 	ctx := context.Background()
 
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	id, err := strconv.ParseInt(c.Params("id"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid event id")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid event id")
 	}
 
 	var e domain.CalendarEvent
@@ -190,8 +179,7 @@ func (h *Handler) GetCalendarEvent(w http.ResponseWriter, r *http.Request) {
 		&e.ConversationID, &e.CreatedAt, &e.UpdatedAt,
 	)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "event not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "event not found")
 	}
 
 	aRows, aErr := h.db.Query(ctx,
@@ -212,7 +200,7 @@ func (h *Handler) GetCalendarEvent(w http.ResponseWriter, r *http.Request) {
 	if e.Attendees == nil {
 		e.Attendees = []domain.EventAttendee{}
 	}
-	writeJSON(w, http.StatusOK, e)
+	return writeJSON(c, fiber.StatusOK, e)
 }
 
 type updateCalendarEventRequest struct {
@@ -226,28 +214,25 @@ type updateCalendarEventRequest struct {
 	Recurrence  *string `json:"recurrence"`
 }
 
-func (h *Handler) UpdateCalendarEvent(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
+func (h *Handler) UpdateCalendarEvent(c *fiber.Ctx) error {
+	claims := getClaims(c)
 	ctx := context.Background()
 
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	id, err := strconv.ParseInt(c.Params("id"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid event id")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid event id")
 	}
 
 	var req updateCalendarEventRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 
 	var startTime *time.Time
 	if req.StartTime != nil {
 		t, err := time.Parse(time.RFC3339, *req.StartTime)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid start_time format, use RFC3339")
-			return
+			return writeError(c, fiber.StatusBadRequest, "invalid start_time format, use RFC3339")
 		}
 		startTime = &t
 	}
@@ -255,8 +240,7 @@ func (h *Handler) UpdateCalendarEvent(w http.ResponseWriter, r *http.Request) {
 	if req.EndTime != nil {
 		t, err := time.Parse(time.RFC3339, *req.EndTime)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid end_time format, use RFC3339")
-			return
+			return writeError(c, fiber.StatusBadRequest, "invalid end_time format, use RFC3339")
 		}
 		endTime = &t
 	}
@@ -276,29 +260,26 @@ func (h *Handler) UpdateCalendarEvent(w http.ResponseWriter, r *http.Request) {
 		req.Title, req.Description, req.Type, startTime, endTime,
 		req.AllDay, req.Color, req.Recurrence, id, claims.UserID)
 	if err != nil || tag.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "event not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "event not found")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (h *Handler) DeleteCalendarEvent(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
+func (h *Handler) DeleteCalendarEvent(c *fiber.Ctx) error {
+	claims := getClaims(c)
 	ctx := context.Background()
 
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	id, err := strconv.ParseInt(c.Params("id"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid event id")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid event id")
 	}
 
 	tag, err := h.db.Exec(ctx,
 		`DELETE FROM calendar_events WHERE id = $1 AND user_id = $2`, id, claims.UserID)
 	if err != nil || tag.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "event not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "event not found")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
 // --- RSVP ---
@@ -307,24 +288,21 @@ type rsvpRequest struct {
 	Status string `json:"status"`
 }
 
-func (h *Handler) UpdateCalendarRSVP(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
+func (h *Handler) UpdateCalendarRSVP(c *fiber.Ctx) error {
+	claims := getClaims(c)
 	ctx := context.Background()
 
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	id, err := strconv.ParseInt(c.Params("id"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid event id")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid event id")
 	}
 
 	var req rsvpRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 	if req.Status == "" {
-		writeError(w, http.StatusBadRequest, "status is required")
-		return
+		return writeError(c, fiber.StatusBadRequest, "status is required")
 	}
 
 	tag, err := h.db.Exec(ctx,
@@ -332,25 +310,24 @@ func (h *Handler) UpdateCalendarRSVP(w http.ResponseWriter, r *http.Request) {
 		 WHERE event_id = $2 AND user_id = $3`,
 		req.Status, id, claims.UserID)
 	if err != nil || tag.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "attendee record not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "attendee record not found")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
 // --- Unified Calendar ---
 
-func (h *Handler) GetUnifiedCalendar(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
+func (h *Handler) GetUnifiedCalendar(c *fiber.Ctx) error {
+	claims := getClaims(c)
 	ctx := context.Background()
 
 	var start, end *time.Time
-	if s := r.URL.Query().Get("start"); s != "" {
+	if s := c.Query("start"); s != "" {
 		if t, err := time.Parse(time.RFC3339, s); err == nil {
 			start = &t
 		}
 	}
-	if e := r.URL.Query().Get("end"); e != "" {
+	if e := c.Query("end"); e != "" {
 		if t, err := time.Parse(time.RFC3339, e); err == nil {
 			end = &t
 		}
@@ -582,5 +559,5 @@ func (h *Handler) GetUnifiedCalendar(w http.ResponseWriter, r *http.Request) {
 	if entries == nil {
 		entries = []domain.CalendarEntry{}
 	}
-	writeJSON(w, http.StatusOK, entries)
+	return writeJSON(c, fiber.StatusOK, entries)
 }

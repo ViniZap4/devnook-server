@@ -2,16 +2,15 @@ package handler
 
 import (
 	"context"
-	"net/http"
 
 	"github.com/ViniZap4/devnook-server/internal/domain"
-	"github.com/go-chi/chi/v5"
+	"github.com/gofiber/fiber/v2"
 )
 
 type userProfileResponse struct {
-	User  domain.User              `json:"user"`
-	Repos []domain.Repository      `json:"repos"`
-	Orgs  []domain.Organization    `json:"orgs"`
+	User  domain.User           `json:"user"`
+	Repos []domain.Repository   `json:"repos"`
+	Orgs  []domain.Organization `json:"orgs"`
 }
 
 type updateProfileRequest struct {
@@ -30,8 +29,8 @@ type dashboardStatsResponse struct {
 	TotalCommits int `json:"total_commits"`
 }
 
-func (h *Handler) GetUserProfile(w http.ResponseWriter, r *http.Request) {
-	username := chi.URLParam(r, "username")
+func (h *Handler) GetUserProfile(c *fiber.Ctx) error {
+	username := c.Params("username")
 
 	var user domain.User
 	err := h.db.QueryRow(context.Background(),
@@ -39,8 +38,7 @@ func (h *Handler) GetUserProfile(w http.ResponseWriter, r *http.Request) {
 		 FROM users WHERE username = $1`, username,
 	).Scan(&user.ID, &user.Username, &user.Email, &user.FullName, &user.AvatarURL, &user.Bio, &user.Location, &user.Website, &user.IsAdmin, &user.CreatedAt, &user.UpdatedAt)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "user not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "user not found")
 	}
 
 	rows, err := h.db.Query(context.Background(),
@@ -50,8 +48,7 @@ func (h *Handler) GetUserProfile(w http.ResponseWriter, r *http.Request) {
 		 WHERE u.username = $1 AND r.is_private = false AND r.org_id IS NULL
 		 ORDER BY r.updated_at DESC`, username)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list repos")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to list repos")
 	}
 	defer rows.Close()
 
@@ -91,15 +88,14 @@ func (h *Handler) GetUserProfile(w http.ResponseWriter, r *http.Request) {
 		orgs = []domain.Organization{}
 	}
 
-	writeJSON(w, http.StatusOK, userProfileResponse{User: user, Repos: repos, Orgs: orgs})
+	return writeJSON(c, fiber.StatusOK, userProfileResponse{User: user, Repos: repos, Orgs: orgs})
 }
 
-func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
+func (h *Handler) UpdateProfile(c *fiber.Ctx) error {
+	claims := getClaims(c)
 	var req updateProfileRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 
 	tag, err := h.db.Exec(context.Background(),
@@ -107,14 +103,13 @@ func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 		 WHERE id=$7`,
 		req.FullName, req.Email, req.AvatarURL, req.Bio, req.Location, req.Website, claims.UserID)
 	if err != nil || tag.RowsAffected() == 0 {
-		writeError(w, http.StatusInternalServerError, "failed to update profile")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to update profile")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (h *Handler) GetDashboardStats(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
+func (h *Handler) GetDashboardStats(c *fiber.Ctx) error {
+	claims := getClaims(c)
 	ctx := context.Background()
 
 	var stats dashboardStatsResponse
@@ -129,5 +124,5 @@ func (h *Handler) GetDashboardStats(w http.ResponseWriter, r *http.Request) {
 	h.db.QueryRow(ctx,
 		`SELECT COUNT(*) FROM issues WHERE author_id = $1 AND state = 'open'`, claims.UserID).Scan(&stats.OpenIssues)
 
-	writeJSON(w, http.StatusOK, stats)
+	return writeJSON(c, fiber.StatusOK, stats)
 }

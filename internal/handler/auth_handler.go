@@ -2,10 +2,10 @@ package handler
 
 import (
 	"context"
-	"net/http"
 
 	"github.com/ViniZap4/devnook-server/internal/auth"
 	"github.com/ViniZap4/devnook-server/internal/domain"
+	"github.com/gofiber/fiber/v2"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -26,34 +26,30 @@ type authResponse struct {
 	User  domain.User `json:"user"`
 }
 
-func (h *Handler) NeedsSetup(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) NeedsSetup(c *fiber.Ctx) error {
 	var count int64
 	h.db.QueryRow(context.Background(), `SELECT COUNT(*) FROM users`).Scan(&count)
-	writeJSON(w, http.StatusOK, map[string]bool{"needs_setup": count == 0})
+	return writeJSON(c, fiber.StatusOK, map[string]bool{"needs_setup": count == 0})
 }
 
-func (h *Handler) Setup(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) Setup(c *fiber.Ctx) error {
 	var count int64
 	h.db.QueryRow(context.Background(), `SELECT COUNT(*) FROM users`).Scan(&count)
 	if count > 0 {
-		writeError(w, http.StatusForbidden, "setup already completed")
-		return
+		return writeError(c, fiber.StatusForbidden, "setup already completed")
 	}
 
 	var req registerRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 	if req.Username == "" || req.Email == "" || req.Password == "" {
-		writeError(w, http.StatusBadRequest, "username, email, and password are required")
-		return
+		return writeError(c, fiber.StatusBadRequest, "username, email, and password are required")
 	}
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to hash password")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to hash password")
 	}
 
 	var user domain.User
@@ -64,34 +60,29 @@ func (h *Handler) Setup(w http.ResponseWriter, r *http.Request) {
 		req.Username, req.Email, string(hash), req.FullName,
 	).Scan(&user.ID, &user.Username, &user.Email, &user.FullName, &user.AvatarURL, &user.Bio, &user.Location, &user.Website, &user.IsAdmin, &user.CreatedAt, &user.UpdatedAt)
 	if err != nil {
-		writeError(w, http.StatusConflict, "failed to create admin user")
-		return
+		return writeError(c, fiber.StatusConflict, "failed to create admin user")
 	}
 
 	token, err := auth.GenerateToken(user.ID, user.Username, h.cfg.Secret)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to generate token")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to generate token")
 	}
 
-	writeJSON(w, http.StatusCreated, authResponse{Token: token, User: user})
+	return writeJSON(c, fiber.StatusCreated, authResponse{Token: token, User: user})
 }
 
-func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) Register(c *fiber.Ctx) error {
 	var req registerRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 	if req.Username == "" || req.Email == "" || req.Password == "" {
-		writeError(w, http.StatusBadRequest, "username, email, and password are required")
-		return
+		return writeError(c, fiber.StatusBadRequest, "username, email, and password are required")
 	}
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to hash password")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to hash password")
 	}
 
 	var user domain.User
@@ -102,24 +93,21 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		req.Username, req.Email, string(hash), req.FullName,
 	).Scan(&user.ID, &user.Username, &user.Email, &user.FullName, &user.AvatarURL, &user.Bio, &user.Location, &user.Website, &user.IsAdmin, &user.CreatedAt, &user.UpdatedAt)
 	if err != nil {
-		writeError(w, http.StatusConflict, "username or email already exists")
-		return
+		return writeError(c, fiber.StatusConflict, "username or email already exists")
 	}
 
 	token, err := auth.GenerateToken(user.ID, user.Username, h.cfg.Secret)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to generate token")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to generate token")
 	}
 
-	writeJSON(w, http.StatusCreated, authResponse{Token: token, User: user})
+	return writeJSON(c, fiber.StatusCreated, authResponse{Token: token, User: user})
 }
 
-func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) Login(c *fiber.Ctx) error {
 	var req loginRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 
 	var user domain.User
@@ -129,42 +117,36 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		 FROM users WHERE username = $1`, req.Username,
 	).Scan(&user.ID, &user.Username, &user.Email, &hash, &user.FullName, &user.AvatarURL, &user.Bio, &user.Location, &user.Website, &user.IsAdmin, &user.CreatedAt, &user.UpdatedAt)
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, "invalid credentials")
-		return
+		return writeError(c, fiber.StatusUnauthorized, "invalid credentials")
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(req.Password)); err != nil {
-		writeError(w, http.StatusUnauthorized, "invalid credentials")
-		return
+		return writeError(c, fiber.StatusUnauthorized, "invalid credentials")
 	}
 
 	token, err := auth.GenerateToken(user.ID, user.Username, h.cfg.Secret)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to generate token")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to generate token")
 	}
 
-	writeJSON(w, http.StatusOK, authResponse{Token: token, User: user})
+	return writeJSON(c, fiber.StatusOK, authResponse{Token: token, User: user})
 }
 
-func (h *Handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
+func (h *Handler) ChangePassword(c *fiber.Ctx) error {
+	claims := getClaims(c)
 
 	var req struct {
 		OldPassword string `json:"old_password"`
 		NewPassword string `json:"new_password"`
 	}
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 	if req.OldPassword == "" || req.NewPassword == "" {
-		writeError(w, http.StatusBadRequest, "old_password and new_password are required")
-		return
+		return writeError(c, fiber.StatusBadRequest, "old_password and new_password are required")
 	}
 	if len(req.NewPassword) < 6 {
-		writeError(w, http.StatusBadRequest, "new password must be at least 6 characters")
-		return
+		return writeError(c, fiber.StatusBadRequest, "new password must be at least 6 characters")
 	}
 
 	// Verify current password
@@ -173,41 +155,36 @@ func (h *Handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		`SELECT password FROM users WHERE id = $1`, claims.UserID,
 	).Scan(&hash)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "user not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "user not found")
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(req.OldPassword)); err != nil {
-		writeError(w, http.StatusUnauthorized, "current password is incorrect")
-		return
+		return writeError(c, fiber.StatusUnauthorized, "current password is incorrect")
 	}
 
 	newHash, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to hash password")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to hash password")
 	}
 
 	if _, err = h.db.Exec(context.Background(),
 		`UPDATE users SET password = $1, updated_at = NOW() WHERE id = $2`,
 		string(newHash), claims.UserID); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to update password")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to update password")
 	}
 
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (h *Handler) GetCurrentUser(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
+func (h *Handler) GetCurrentUser(c *fiber.Ctx) error {
+	claims := getClaims(c)
 	var user domain.User
 	err := h.db.QueryRow(context.Background(),
 		`SELECT id, username, email, full_name, avatar_url, bio, location, website, is_admin, created_at, updated_at
 		 FROM users WHERE id = $1`, claims.UserID,
 	).Scan(&user.ID, &user.Username, &user.Email, &user.FullName, &user.AvatarURL, &user.Bio, &user.Location, &user.Website, &user.IsAdmin, &user.CreatedAt, &user.UpdatedAt)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "user not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "user not found")
 	}
-	writeJSON(w, http.StatusOK, user)
+	return writeJSON(c, fiber.StatusOK, user)
 }

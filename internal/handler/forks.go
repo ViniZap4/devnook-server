@@ -3,31 +3,28 @@ package handler
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 
 	"github.com/ViniZap4/devnook-server/internal/domain"
-	"github.com/go-chi/chi/v5"
+	"github.com/gofiber/fiber/v2"
 )
 
-func (h *Handler) ForkRepo(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	owner := chi.URLParam(r, "owner")
-	name := chi.URLParam(r, "name")
+func (h *Handler) ForkRepo(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	owner := c.Params("owner")
+	name := c.Params("name")
 
 	// Get source repo
 	repoID, err := h.getRepoID(owner, name)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "repository not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "repository not found")
 	}
 
 	// Can't fork your own repo
 	if owner == claims.Username {
-		writeError(w, http.StatusBadRequest, "cannot fork your own repository")
-		return
+		return writeError(c, fiber.StatusBadRequest, "cannot fork your own repository")
 	}
 
 	ctx := context.Background()
@@ -38,8 +35,7 @@ func (h *Handler) ForkRepo(w http.ResponseWriter, r *http.Request) {
 		`SELECT COUNT(*) FROM repositories WHERE owner_id = $1 AND name = $2`,
 		claims.UserID, name).Scan(&existing)
 	if existing > 0 {
-		writeError(w, http.StatusConflict, "you already have a repository with this name")
-		return
+		return writeError(c, fiber.StatusConflict, "you already have a repository with this name")
 	}
 
 	// Create fork record
@@ -52,22 +48,19 @@ func (h *Handler) ForkRepo(w http.ResponseWriter, r *http.Request) {
 		claims.UserID, repoID,
 	).Scan(&forkID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create fork")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to create fork")
 	}
 
 	// Clone bare repo on disk
 	srcPath := h.repoPath(owner, name)
 	dstPath := filepath.Join(h.cfg.ReposPath, claims.Username, name+".git")
 	if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create fork directory")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to create fork directory")
 	}
 
 	cmd := exec.Command("git", "clone", "--bare", srcPath, dstPath)
 	if err := cmd.Run(); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to clone repository")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to clone repository")
 	}
 
 	// Update forks_count on source
@@ -75,21 +68,20 @@ func (h *Handler) ForkRepo(w http.ResponseWriter, r *http.Request) {
 		`UPDATE repositories SET forks_count = (SELECT COUNT(*) FROM repositories WHERE forked_from_id = $1) WHERE id = $1`,
 		repoID)
 
-	writeJSON(w, http.StatusCreated, map[string]any{
+	return writeJSON(c, fiber.StatusCreated, map[string]any{
 		"id":        forkID,
 		"name":      name,
-		"clone_url": fmt.Sprintf("%s/%s/%s.git", r.Host, claims.Username, name),
+		"clone_url": fmt.Sprintf("%s/%s/%s.git", c.Hostname(), claims.Username, name),
 	})
 }
 
-func (h *Handler) ListForks(w http.ResponseWriter, r *http.Request) {
-	owner := chi.URLParam(r, "owner")
-	name := chi.URLParam(r, "name")
+func (h *Handler) ListForks(c *fiber.Ctx) error {
+	owner := c.Params("owner")
+	name := c.Params("name")
 
 	repoID, err := h.getRepoID(owner, name)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "repository not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "repository not found")
 	}
 
 	rows, err := h.db.Query(context.Background(),
@@ -98,8 +90,7 @@ func (h *Handler) ListForks(w http.ResponseWriter, r *http.Request) {
 		 WHERE r.forked_from_id = $1
 		 ORDER BY r.created_at DESC`, repoID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list forks")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to list forks")
 	}
 	defer rows.Close()
 
@@ -116,5 +107,5 @@ func (h *Handler) ListForks(w http.ResponseWriter, r *http.Request) {
 	if repos == nil {
 		repos = []domain.Repository{}
 	}
-	writeJSON(w, http.StatusOK, repos)
+	return writeJSON(c, fiber.StatusOK, repos)
 }

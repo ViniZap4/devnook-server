@@ -2,12 +2,11 @@ package handler
 
 import (
 	"bufio"
-	"net/http"
 	"os/exec"
 	"strconv"
 	"strings"
 
-	"github.com/go-chi/chi/v5"
+	"github.com/gofiber/fiber/v2"
 )
 
 type Contributor struct {
@@ -17,16 +16,15 @@ type Contributor struct {
 }
 
 // GetContributors returns contributor statistics for a repository.
-func (h *Handler) GetContributors(w http.ResponseWriter, r *http.Request) {
-	owner := chi.URLParam(r, "owner")
-	name := chi.URLParam(r, "name")
+func (h *Handler) GetContributors(c *fiber.Ctx) error {
+	owner := c.Params("owner")
+	name := c.Params("name")
 	repoDir := h.repoPath(owner, name)
 
 	cmd := exec.Command("git", "-C", repoDir, "shortlog", "-sne", "HEAD")
 	out, err := cmd.Output()
 	if err != nil {
-		writeJSON(w, http.StatusOK, []Contributor{})
-		return
+		return writeJSON(c, fiber.StatusOK, []Contributor{})
 	}
 
 	var contributors []Contributor
@@ -63,5 +61,5 @@ func (h *Handler) GetContributors(w http.ResponseWriter, r *http.Request) {
 		contributors = []Contributor{}
 	}
 
-	writeJSON(w, http.StatusOK, contributors)
+	return writeJSON(c, fiber.StatusOK, contributors)
 }

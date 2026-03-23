@@ -2,19 +2,17 @@ package handler
 
 import (
 	"context"
-	"net/http"
 
 	"github.com/ViniZap4/devnook-server/internal/domain"
-	"github.com/go-chi/chi/v5"
+	"github.com/gofiber/fiber/v2"
 )
 
 // ── Search ──────────────────────────────────────────────────────────
 
-func (h *Handler) SearchUsers(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query().Get("q")
+func (h *Handler) SearchUsers(c *fiber.Ctx) error {
+	q := c.Query("q")
 	if q == "" {
-		writeJSON(w, http.StatusOK, []domain.User{})
-		return
+		return writeJSON(c, fiber.StatusOK, []domain.User{})
 	}
 
 	pattern := "%" + q + "%"
@@ -22,68 +20,61 @@ func (h *Handler) SearchUsers(w http.ResponseWriter, r *http.Request) {
 		`SELECT `+userColumns+` FROM users WHERE username ILIKE $1 OR full_name ILIKE $1 ORDER BY username LIMIT 20`,
 		pattern)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "search failed")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "search failed")
 	}
 	defer rows.Close()
 
-	writeJSON(w, http.StatusOK, scanUsers(rows))
+	return writeJSON(c, fiber.StatusOK, scanUsers(rows))
 }
 
 // ── Follow ──────────────────────────────────────────────────────────
 
-func (h *Handler) FollowUser(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
+func (h *Handler) FollowUser(c *fiber.Ctx) error {
+	claims := getClaims(c)
 	ctx := context.Background()
 
-	targetID, err := h.resolveUserID(ctx, chi.URLParam(r, "username"))
+	targetID, err := h.resolveUserID(ctx, c.Params("username"))
 	if err != nil {
-		writeError(w, http.StatusNotFound, "user not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "user not found")
 	}
 	if targetID == claims.UserID {
-		writeError(w, http.StatusBadRequest, "cannot follow yourself")
-		return
+		return writeError(c, fiber.StatusBadRequest, "cannot follow yourself")
 	}
 
 	_, err = h.db.Exec(ctx,
 		`INSERT INTO follows (follower_id, following_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
 		claims.UserID, targetID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to follow")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to follow")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (h *Handler) UnfollowUser(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
+func (h *Handler) UnfollowUser(c *fiber.Ctx) error {
+	claims := getClaims(c)
 	ctx := context.Background()
 
-	targetID, err := h.resolveUserID(ctx, chi.URLParam(r, "username"))
+	targetID, err := h.resolveUserID(ctx, c.Params("username"))
 	if err != nil {
-		writeError(w, http.StatusNotFound, "user not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "user not found")
 	}
 
 	_, err = h.db.Exec(ctx,
 		`DELETE FROM follows WHERE follower_id = $1 AND following_id = $2`,
 		claims.UserID, targetID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to unfollow")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to unfollow")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (h *Handler) IsFollowing(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
+func (h *Handler) IsFollowing(c *fiber.Ctx) error {
+	claims := getClaims(c)
 	ctx := context.Background()
 
-	targetID, err := h.resolveUserID(ctx, chi.URLParam(r, "username"))
+	targetID, err := h.resolveUserID(ctx, c.Params("username"))
 	if err != nil {
-		writeError(w, http.StatusNotFound, "user not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "user not found")
 	}
 
 	var count int
@@ -91,11 +82,11 @@ func (h *Handler) IsFollowing(w http.ResponseWriter, r *http.Request) {
 		`SELECT COUNT(*) FROM follows WHERE follower_id = $1 AND following_id = $2`,
 		claims.UserID, targetID).Scan(&count)
 
-	writeJSON(w, http.StatusOK, map[string]bool{"following": count > 0})
+	return writeJSON(c, fiber.StatusOK, map[string]bool{"following": count > 0})
 }
 
-func (h *Handler) GetFollowers(w http.ResponseWriter, r *http.Request) {
-	username := chi.URLParam(r, "username")
+func (h *Handler) GetFollowers(c *fiber.Ctx) error {
+	username := c.Params("username")
 
 	rows, err := h.db.Query(context.Background(),
 		`SELECT `+userColumnsAs+` FROM users u
@@ -104,16 +95,15 @@ func (h *Handler) GetFollowers(w http.ResponseWriter, r *http.Request) {
 		 WHERE t.username = $1
 		 ORDER BY f.created_at DESC`, username)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to get followers")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to get followers")
 	}
 	defer rows.Close()
 
-	writeJSON(w, http.StatusOK, scanUsers(rows))
+	return writeJSON(c, fiber.StatusOK, scanUsers(rows))
 }
 
-func (h *Handler) GetFollowing(w http.ResponseWriter, r *http.Request) {
-	username := chi.URLParam(r, "username")
+func (h *Handler) GetFollowing(c *fiber.Ctx) error {
+	username := c.Params("username")
 
 	rows, err := h.db.Query(context.Background(),
 		`SELECT `+userColumnsAs+` FROM users u
@@ -122,28 +112,25 @@ func (h *Handler) GetFollowing(w http.ResponseWriter, r *http.Request) {
 		 WHERE t.username = $1
 		 ORDER BY f.created_at DESC`, username)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to get following")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to get following")
 	}
 	defer rows.Close()
 
-	writeJSON(w, http.StatusOK, scanUsers(rows))
+	return writeJSON(c, fiber.StatusOK, scanUsers(rows))
 }
 
 // ── Block ───────────────────────────────────────────────────────────
 
-func (h *Handler) BlockUser(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
+func (h *Handler) BlockUser(c *fiber.Ctx) error {
+	claims := getClaims(c)
 	ctx := context.Background()
 
-	targetID, err := h.resolveUserID(ctx, chi.URLParam(r, "username"))
+	targetID, err := h.resolveUserID(ctx, c.Params("username"))
 	if err != nil {
-		writeError(w, http.StatusNotFound, "user not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "user not found")
 	}
 	if targetID == claims.UserID {
-		writeError(w, http.StatusBadRequest, "cannot block yourself")
-		return
+		return writeError(c, fiber.StatusBadRequest, "cannot block yourself")
 	}
 
 	// Remove any follow relationships in both directions
@@ -154,40 +141,36 @@ func (h *Handler) BlockUser(w http.ResponseWriter, r *http.Request) {
 		`INSERT INTO blocks (blocker_id, blocked_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
 		claims.UserID, targetID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to block")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to block")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (h *Handler) UnblockUser(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
+func (h *Handler) UnblockUser(c *fiber.Ctx) error {
+	claims := getClaims(c)
 	ctx := context.Background()
 
-	targetID, err := h.resolveUserID(ctx, chi.URLParam(r, "username"))
+	targetID, err := h.resolveUserID(ctx, c.Params("username"))
 	if err != nil {
-		writeError(w, http.StatusNotFound, "user not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "user not found")
 	}
 
 	_, err = h.db.Exec(ctx,
 		`DELETE FROM blocks WHERE blocker_id = $1 AND blocked_id = $2`,
 		claims.UserID, targetID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to unblock")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to unblock")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (h *Handler) IsBlocked(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
+func (h *Handler) IsBlocked(c *fiber.Ctx) error {
+	claims := getClaims(c)
 	ctx := context.Background()
 
-	targetID, err := h.resolveUserID(ctx, chi.URLParam(r, "username"))
+	targetID, err := h.resolveUserID(ctx, c.Params("username"))
 	if err != nil {
-		writeError(w, http.StatusNotFound, "user not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "user not found")
 	}
 
 	var count int
@@ -195,11 +178,11 @@ func (h *Handler) IsBlocked(w http.ResponseWriter, r *http.Request) {
 		`SELECT COUNT(*) FROM blocks WHERE blocker_id = $1 AND blocked_id = $2`,
 		claims.UserID, targetID).Scan(&count)
 
-	writeJSON(w, http.StatusOK, map[string]bool{"blocked": count > 0})
+	return writeJSON(c, fiber.StatusOK, map[string]bool{"blocked": count > 0})
 }
 
-func (h *Handler) ListBlockedUsers(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
+func (h *Handler) ListBlockedUsers(c *fiber.Ctx) error {
+	claims := getClaims(c)
 
 	rows, err := h.db.Query(context.Background(),
 		`SELECT `+userColumnsAs+` FROM users u
@@ -207,26 +190,24 @@ func (h *Handler) ListBlockedUsers(w http.ResponseWriter, r *http.Request) {
 		 WHERE b.blocker_id = $1
 		 ORDER BY b.created_at DESC`, claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list blocked users")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to list blocked users")
 	}
 	defer rows.Close()
 
-	writeJSON(w, http.StatusOK, scanUsers(rows))
+	return writeJSON(c, fiber.StatusOK, scanUsers(rows))
 }
 
 // ── Status ──────────────────────────────────────────────────────────
 
-func (h *Handler) SetStatus(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
+func (h *Handler) SetStatus(c *fiber.Ctx) error {
+	claims := getClaims(c)
 	var req struct {
 		Emoji   string `json:"emoji"`
 		Message string `json:"message"`
 		Busy    bool   `json:"busy"`
 	}
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 
 	_, err := h.db.Exec(context.Background(),
@@ -235,14 +216,13 @@ func (h *Handler) SetStatus(w http.ResponseWriter, r *http.Request) {
 		 ON CONFLICT (user_id) DO UPDATE SET emoji=$2, message=$3, busy=$4, updated_at=NOW()`,
 		claims.UserID, req.Emoji, req.Message, req.Busy)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to set status")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to set status")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (h *Handler) GetStatus(w http.ResponseWriter, r *http.Request) {
-	username := chi.URLParam(r, "username")
+func (h *Handler) GetStatus(c *fiber.Ctx) error {
+	username := c.Params("username")
 
 	var status domain.UserStatus
 	err := h.db.QueryRow(context.Background(),
@@ -252,16 +232,14 @@ func (h *Handler) GetStatus(w http.ResponseWriter, r *http.Request) {
 		 WHERE u.username = $1`, username,
 	).Scan(&status.Emoji, &status.Message, &status.Busy)
 	if err != nil {
-		writeJSON(w, http.StatusOK, domain.UserStatus{})
-		return
+		return writeJSON(c, fiber.StatusOK, domain.UserStatus{})
 	}
-	writeJSON(w, http.StatusOK, status)
+	return writeJSON(c, fiber.StatusOK, status)
 }
 
-func (h *Handler) ClearStatus(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
+func (h *Handler) ClearStatus(c *fiber.Ctx) error {
+	claims := getClaims(c)
 	h.db.Exec(context.Background(),
 		`DELETE FROM user_status WHERE user_id = $1`, claims.UserID)
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
-
