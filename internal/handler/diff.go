@@ -3,27 +3,25 @@ package handler
 import (
 	"bufio"
 	"fmt"
-	"net/http"
 	"os/exec"
 	"strings"
 	"time"
 
 	"github.com/ViniZap4/devnook-server/internal/domain"
-	"github.com/go-chi/chi/v5"
+	"github.com/gofiber/fiber/v2"
 )
 
 // GetTags returns the list of tags with their hashes and dates.
-func (h *Handler) GetTags(w http.ResponseWriter, r *http.Request) {
-	owner := chi.URLParam(r, "owner")
-	name := chi.URLParam(r, "name")
+func (h *Handler) GetTags(c *fiber.Ctx) error {
+	owner := c.Params("owner")
+	name := c.Params("name")
 	repoDir := h.repoPath(owner, name)
 
 	format := "%(refname:short)%09%(objectname:short)%09%(*objectname:short)%09%(creatordate:iso8601)%09%(subject)"
 	cmd := exec.Command("git", "-C", repoDir, "tag", "--sort=-creatordate", fmt.Sprintf("--format=%s", format))
 	out, err := cmd.Output()
 	if err != nil {
-		writeJSON(w, http.StatusOK, []domain.Tag{})
-		return
+		return writeJSON(c, fiber.StatusOK, []domain.Tag{})
 	}
 
 	var tags []domain.Tag
@@ -51,7 +49,7 @@ func (h *Handler) GetTags(w http.ResponseWriter, r *http.Request) {
 	if tags == nil {
 		tags = []domain.Tag{}
 	}
-	writeJSON(w, http.StatusOK, tags)
+	return writeJSON(c, fiber.StatusOK, tags)
 }
 
 // DiffEntry represents a single file change in a diff.
@@ -74,10 +72,10 @@ type CommitDetail struct {
 }
 
 // GetCommitDetail returns a single commit with its diff.
-func (h *Handler) GetCommitDetail(w http.ResponseWriter, r *http.Request) {
-	owner := chi.URLParam(r, "owner")
-	name := chi.URLParam(r, "name")
-	hash := chi.URLParam(r, "hash")
+func (h *Handler) GetCommitDetail(c *fiber.Ctx) error {
+	owner := c.Params("owner")
+	name := c.Params("name")
+	hash := c.Params("hash")
 	repoDir := h.repoPath(owner, name)
 
 	// Get commit info
@@ -85,14 +83,12 @@ func (h *Handler) GetCommitDetail(w http.ResponseWriter, r *http.Request) {
 	cmd := exec.Command("git", "-C", repoDir, "log", "-1", fmt.Sprintf("--format=%s", format), hash)
 	out, err := cmd.Output()
 	if err != nil {
-		writeError(w, http.StatusNotFound, "commit not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "commit not found")
 	}
 
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 	if len(lines) < 6 {
-		writeError(w, http.StatusInternalServerError, "failed to parse commit")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to parse commit")
 	}
 
 	date, _ := time.Parse(time.RFC3339, lines[5])
@@ -131,20 +127,19 @@ func (h *Handler) GetCommitDetail(w http.ResponseWriter, r *http.Request) {
 	diffOut, _ := diffCmd.Output()
 	detail.Files = parseDiff(string(diffOut))
 
-	writeJSON(w, http.StatusOK, detail)
+	return writeJSON(c, fiber.StatusOK, detail)
 }
 
 // CompareBranches returns the diff between two refs.
-func (h *Handler) CompareBranches(w http.ResponseWriter, r *http.Request) {
-	owner := chi.URLParam(r, "owner")
-	name := chi.URLParam(r, "name")
+func (h *Handler) CompareBranches(c *fiber.Ctx) error {
+	owner := c.Params("owner")
+	name := c.Params("name")
 	repoDir := h.repoPath(owner, name)
 
-	base := r.URL.Query().Get("base")
-	head := r.URL.Query().Get("head")
+	base := c.Query("base")
+	head := c.Query("head")
 	if base == "" || head == "" {
-		writeError(w, http.StatusBadRequest, "base and head parameters are required")
-		return
+		return writeError(c, fiber.StatusBadRequest, "base and head parameters are required")
 	}
 
 	type CompareResult struct {
@@ -165,8 +160,7 @@ func (h *Handler) CompareBranches(w http.ResponseWriter, r *http.Request) {
 		fmt.Sprintf("--format=%s", format), "--max-count=100")
 	commitOut, err := commitCmd.Output()
 	if err != nil {
-		writeError(w, http.StatusNotFound, "branches not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "branches not found")
 	}
 
 	commitLines := strings.Split(strings.TrimSpace(string(commitOut)), "\n")
@@ -213,15 +207,15 @@ func (h *Handler) CompareBranches(w http.ResponseWriter, r *http.Request) {
 		result.Files = []DiffEntry{}
 	}
 
-	writeJSON(w, http.StatusOK, result)
+	return writeJSON(c, fiber.StatusOK, result)
 }
 
 // GetBlame returns git blame output for a file.
-func (h *Handler) GetBlame(w http.ResponseWriter, r *http.Request) {
-	owner := chi.URLParam(r, "owner")
-	name := chi.URLParam(r, "name")
-	ref := chi.URLParam(r, "ref")
-	path := chi.URLParam(r, "*")
+func (h *Handler) GetBlame(c *fiber.Ctx) error {
+	owner := c.Params("owner")
+	name := c.Params("name")
+	ref := c.Params("ref")
+	path := c.Params("*")
 	repoDir := h.repoPath(owner, name)
 
 	type BlameLine struct {
@@ -235,8 +229,7 @@ func (h *Handler) GetBlame(w http.ResponseWriter, r *http.Request) {
 	cmd := exec.Command("git", "-C", repoDir, "blame", "--porcelain", ref, "--", path)
 	out, err := cmd.Output()
 	if err != nil {
-		writeError(w, http.StatusNotFound, "file not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "file not found")
 	}
 
 	var blameLines []BlameLine
@@ -277,7 +270,7 @@ func (h *Handler) GetBlame(w http.ResponseWriter, r *http.Request) {
 	if blameLines == nil {
 		blameLines = []BlameLine{}
 	}
-	writeJSON(w, http.StatusOK, blameLines)
+	return writeJSON(c, fiber.StatusOK, blameLines)
 }
 
 // parseDiff parses unified diff output into DiffEntry slices.

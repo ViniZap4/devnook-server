@@ -3,40 +3,39 @@ package handler
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/ViniZap4/devnook-server/internal/domain"
-	"github.com/go-chi/chi/v5"
+	"github.com/gofiber/fiber/v2"
 )
 
-func (h *Handler) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
-	claims := getClaims(r)
+func (h *Handler) requireAdmin(c *fiber.Ctx) bool {
+	claims := getClaims(c)
 	var isAdmin bool
 	err := h.db.QueryRow(context.Background(),
 		`SELECT is_admin FROM users WHERE id = $1`, claims.UserID).Scan(&isAdmin)
 	if err != nil || !isAdmin {
-		writeError(w, http.StatusForbidden, "admin access required")
+		writeError(c, fiber.StatusForbidden, "admin access required")
 		return false
 	}
 	return true
 }
 
-func (h *Handler) AdminListUsers(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
+func (h *Handler) AdminListUsers(c *fiber.Ctx) error {
+	if !h.requireAdmin(c) {
+		return nil
 	}
 
-	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	page, _ := strconv.Atoi(c.Query("page"))
 	if page < 1 {
 		page = 1
 	}
 	perPage := 50
 	offset := (page - 1) * perPage
 
-	q := r.URL.Query().Get("q")
+	q := c.Query("q")
 	ctx := context.Background()
 
 	var users []domain.User
@@ -47,8 +46,7 @@ func (h *Handler) AdminListUsers(w http.ResponseWriter, r *http.Request) {
 			 ORDER BY created_at DESC LIMIT $2 OFFSET $3`,
 			"%"+q+"%", perPage, offset)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to list users")
-			return
+			return writeError(c, fiber.StatusInternalServerError, "failed to list users")
 		}
 		defer rows.Close()
 		for rows.Next() {
@@ -65,8 +63,7 @@ func (h *Handler) AdminListUsers(w http.ResponseWriter, r *http.Request) {
 			 FROM users ORDER BY created_at DESC LIMIT $1 OFFSET $2`,
 			perPage, offset)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to list users")
-			return
+			return writeError(c, fiber.StatusInternalServerError, "failed to list users")
 		}
 		defer rows.Close()
 		for rows.Next() {
@@ -86,7 +83,7 @@ func (h *Handler) AdminListUsers(w http.ResponseWriter, r *http.Request) {
 	var total int
 	h.db.QueryRow(ctx, `SELECT COUNT(*) FROM users`).Scan(&total)
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	return writeJSON(c, fiber.StatusOK, map[string]any{
 		"users":       users,
 		"total_count": total,
 		"page":        page,
@@ -94,38 +91,36 @@ func (h *Handler) AdminListUsers(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (h *Handler) AdminGetUser(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
+func (h *Handler) AdminGetUser(c *fiber.Ctx) error {
+	if !h.requireAdmin(c) {
+		return nil
 	}
 
-	username := chi.URLParam(r, "username")
+	username := c.Params("username")
 	var u domain.User
 	err := h.db.QueryRow(context.Background(),
 		`SELECT id, username, email, full_name, avatar_url, bio, location, website, is_admin, created_at, updated_at
 		 FROM users WHERE username = $1`, username,
 	).Scan(&u.ID, &u.Username, &u.Email, &u.FullName, &u.AvatarURL, &u.Bio, &u.Location, &u.Website, &u.IsAdmin, &u.CreatedAt, &u.UpdatedAt)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "user not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "user not found")
 	}
-	writeJSON(w, http.StatusOK, u)
+	return writeJSON(c, fiber.StatusOK, u)
 }
 
-func (h *Handler) AdminUpdateUser(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
+func (h *Handler) AdminUpdateUser(c *fiber.Ctx) error {
+	if !h.requireAdmin(c) {
+		return nil
 	}
 
-	username := chi.URLParam(r, "username")
+	username := c.Params("username")
 	var req struct {
 		IsAdmin  *bool   `json:"is_admin,omitempty"`
 		FullName *string `json:"full_name,omitempty"`
 		Email    *string `json:"email,omitempty"`
 	}
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 
 	ctx := context.Background()
@@ -150,8 +145,7 @@ func (h *Handler) AdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(sets) == 0 {
-		w.WriteHeader(http.StatusNoContent)
-		return
+		return c.SendStatus(fiber.StatusNoContent)
 	}
 
 	sets = append(sets, "updated_at=NOW()")
@@ -160,38 +154,35 @@ func (h *Handler) AdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 	args = append(args, username)
 
 	if _, err := h.db.Exec(ctx, query, args...); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to update user")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to update user")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (h *Handler) AdminDeleteUser(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
+func (h *Handler) AdminDeleteUser(c *fiber.Ctx) error {
+	if !h.requireAdmin(c) {
+		return nil
 	}
 
-	username := chi.URLParam(r, "username")
+	username := c.Params("username")
 
-	claims := getClaims(r)
+	claims := getClaims(c)
 	var targetID int64
 	h.db.QueryRow(context.Background(), `SELECT id FROM users WHERE username = $1`, username).Scan(&targetID)
 	if targetID == claims.UserID {
-		writeError(w, http.StatusBadRequest, "cannot delete yourself")
-		return
+		return writeError(c, fiber.StatusBadRequest, "cannot delete yourself")
 	}
 
 	tag, err := h.db.Exec(context.Background(), `DELETE FROM users WHERE username = $1`, username)
 	if err != nil || tag.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "user not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "user not found")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (h *Handler) AdminStats(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
+func (h *Handler) AdminStats(c *fiber.Ctx) error {
+	if !h.requireAdmin(c) {
+		return nil
 	}
 
 	ctx := context.Background()
@@ -201,7 +192,7 @@ func (h *Handler) AdminStats(w http.ResponseWriter, r *http.Request) {
 	h.db.QueryRow(ctx, `SELECT COUNT(*) FROM organizations`).Scan(&orgCount)
 	h.db.QueryRow(ctx, `SELECT COUNT(*) FROM issues`).Scan(&issueCount)
 
-	writeJSON(w, http.StatusOK, map[string]int{
+	return writeJSON(c, fiber.StatusOK, map[string]int{
 		"total_users":  userCount,
 		"total_repos":  repoCount,
 		"total_orgs":   orgCount,
@@ -209,18 +200,18 @@ func (h *Handler) AdminStats(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (h *Handler) AdminListRepos(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
+func (h *Handler) AdminListRepos(c *fiber.Ctx) error {
+	if !h.requireAdmin(c) {
+		return nil
 	}
 
-	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	page, _ := strconv.Atoi(c.Query("page"))
 	if page < 1 {
 		page = 1
 	}
 	perPage := 50
 	offset := (page - 1) * perPage
-	q := r.URL.Query().Get("q")
+	q := c.Query("q")
 	ctx := context.Background()
 
 	var totalCount int
@@ -249,8 +240,7 @@ func (h *Handler) AdminListRepos(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list repos")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to list repos")
 	}
 	defer rows.Close()
 
@@ -271,7 +261,7 @@ func (h *Handler) AdminListRepos(w http.ResponseWriter, r *http.Request) {
 		totalPages = 1
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	return writeJSON(c, fiber.StatusOK, map[string]any{
 		"repos":       repos,
 		"total_count": totalCount,
 		"page":        page,
@@ -280,9 +270,9 @@ func (h *Handler) AdminListRepos(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (h *Handler) AdminListOrgs(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
+func (h *Handler) AdminListOrgs(c *fiber.Ctx) error {
+	if !h.requireAdmin(c) {
+		return nil
 	}
 
 	ctx := context.Background()
@@ -290,8 +280,7 @@ func (h *Handler) AdminListOrgs(w http.ResponseWriter, r *http.Request) {
 		`SELECT id, name, display_name, description, avatar_url, location, website, created_at, updated_at
 		 FROM organizations ORDER BY created_at DESC`)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list organizations")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to list organizations")
 	}
 	defer rows.Close()
 
@@ -307,12 +296,12 @@ func (h *Handler) AdminListOrgs(w http.ResponseWriter, r *http.Request) {
 	if orgs == nil {
 		orgs = []domain.Organization{}
 	}
-	writeJSON(w, http.StatusOK, orgs)
+	return writeJSON(c, fiber.StatusOK, orgs)
 }
 
-func (h *Handler) AdminAnalytics(w http.ResponseWriter, r *http.Request) {
-	if !h.requireAdmin(w, r) {
-		return
+func (h *Handler) AdminAnalytics(c *fiber.Ctx) error {
+	if !h.requireAdmin(c) {
+		return nil
 	}
 
 	ctx := context.Background()
@@ -325,8 +314,7 @@ func (h *Handler) AdminAnalytics(w http.ResponseWriter, r *http.Request) {
 		 WHERE created_at >= NOW() - INTERVAL '1 day' * $1
 		 GROUP BY day ORDER BY day`, days)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to get analytics")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to get analytics")
 	}
 	defer userRows.Close()
 
@@ -356,8 +344,7 @@ func (h *Handler) AdminAnalytics(w http.ResponseWriter, r *http.Request) {
 		 WHERE created_at >= NOW() - INTERVAL '1 day' * $1
 		 GROUP BY day ORDER BY day`, days)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to get analytics")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to get analytics")
 	}
 	defer repoRows.Close()
 
@@ -382,8 +369,7 @@ func (h *Handler) AdminAnalytics(w http.ResponseWriter, r *http.Request) {
 		 WHERE created_at >= NOW() - INTERVAL '1 day' * $1
 		 GROUP BY day ORDER BY day`, days)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to get analytics")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to get analytics")
 	}
 	defer issueRows.Close()
 
@@ -407,7 +393,7 @@ func (h *Handler) AdminAnalytics(w http.ResponseWriter, r *http.Request) {
 	h.db.QueryRow(ctx, `SELECT COUNT(*) FROM users WHERE created_at >= NOW() - INTERVAL '7 days'`).Scan(&newThisWeek)
 	h.db.QueryRow(ctx, `SELECT COUNT(*) FROM users WHERE created_at >= NOW() - INTERVAL '30 days'`).Scan(&newThisMonth)
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	return writeJSON(c, fiber.StatusOK, map[string]any{
 		"user_growth":    userGrowth,
 		"repo_growth":    repoGrowth,
 		"issue_growth":   issueGrowth,

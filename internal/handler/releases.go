@@ -2,11 +2,10 @@ package handler
 
 import (
 	"context"
-	"net/http"
 	"strconv"
 
 	"github.com/ViniZap4/devnook-server/internal/domain"
-	"github.com/go-chi/chi/v5"
+	"github.com/gofiber/fiber/v2"
 )
 
 type releaseRequest struct {
@@ -17,14 +16,13 @@ type releaseRequest struct {
 	IsPrerelease bool   `json:"is_prerelease"`
 }
 
-func (h *Handler) ListReleases(w http.ResponseWriter, r *http.Request) {
-	owner := chi.URLParam(r, "owner")
-	name := chi.URLParam(r, "name")
+func (h *Handler) ListReleases(c *fiber.Ctx) error {
+	owner := c.Params("owner")
+	name := c.Params("name")
 
 	repoID, err := h.getRepoID(owner, name)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "repository not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "repository not found")
 	}
 
 	rows, err := h.db.Query(context.Background(),
@@ -33,8 +31,7 @@ func (h *Handler) ListReleases(w http.ResponseWriter, r *http.Request) {
 		 FROM releases rl JOIN users u ON u.id = rl.author_id
 		 WHERE rl.repo_id = $1 ORDER BY rl.created_at DESC`, repoID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list releases")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to list releases")
 	}
 	defer rows.Close()
 
@@ -50,14 +47,13 @@ func (h *Handler) ListReleases(w http.ResponseWriter, r *http.Request) {
 	if releases == nil {
 		releases = []domain.Release{}
 	}
-	writeJSON(w, http.StatusOK, releases)
+	return writeJSON(c, fiber.StatusOK, releases)
 }
 
-func (h *Handler) GetRelease(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+func (h *Handler) GetRelease(c *fiber.Ctx) error {
+	id, err := strconv.ParseInt(c.Params("id"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid release id")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid release id")
 	}
 
 	var rl domain.Release
@@ -69,31 +65,27 @@ func (h *Handler) GetRelease(w http.ResponseWriter, r *http.Request) {
 	).Scan(&rl.ID, &rl.RepoID, &rl.TagName, &rl.Title, &rl.Body,
 		&rl.IsDraft, &rl.IsPrerelease, &rl.AuthorID, &rl.Author, &rl.CreatedAt, &rl.UpdatedAt)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "release not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "release not found")
 	}
-	writeJSON(w, http.StatusOK, rl)
+	return writeJSON(c, fiber.StatusOK, rl)
 }
 
-func (h *Handler) CreateRelease(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	owner := chi.URLParam(r, "owner")
-	name := chi.URLParam(r, "name")
+func (h *Handler) CreateRelease(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	owner := c.Params("owner")
+	name := c.Params("name")
 
 	repoID, err := h.getRepoID(owner, name)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "repository not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "repository not found")
 	}
 
 	var req releaseRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 	if req.TagName == "" || req.Title == "" {
-		writeError(w, http.StatusBadRequest, "tag_name and title are required")
-		return
+		return writeError(c, fiber.StatusBadRequest, "tag_name and title are required")
 	}
 
 	var id int64
@@ -103,46 +95,40 @@ func (h *Handler) CreateRelease(w http.ResponseWriter, r *http.Request) {
 		repoID, req.TagName, req.Title, req.Body, req.IsDraft, req.IsPrerelease, claims.UserID,
 	).Scan(&id)
 	if err != nil {
-		writeError(w, http.StatusConflict, "release with this tag already exists")
-		return
+		return writeError(c, fiber.StatusConflict, "release with this tag already exists")
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"id": id})
+	return writeJSON(c, fiber.StatusCreated, map[string]any{"id": id})
 }
 
-func (h *Handler) UpdateRelease(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+func (h *Handler) UpdateRelease(c *fiber.Ctx) error {
+	id, err := strconv.ParseInt(c.Params("id"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid release id")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid release id")
 	}
 
 	var req releaseRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 
 	tag, err := h.db.Exec(context.Background(),
 		`UPDATE releases SET title=$1, body=$2, is_draft=$3, is_prerelease=$4, updated_at=NOW() WHERE id=$5`,
 		req.Title, req.Body, req.IsDraft, req.IsPrerelease, id)
 	if err != nil || tag.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "release not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "release not found")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (h *Handler) DeleteRelease(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+func (h *Handler) DeleteRelease(c *fiber.Ctx) error {
+	id, err := strconv.ParseInt(c.Params("id"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid release id")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid release id")
 	}
 
 	tag, err := h.db.Exec(context.Background(), `DELETE FROM releases WHERE id = $1`, id)
 	if err != nil || tag.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "release not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "release not found")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }

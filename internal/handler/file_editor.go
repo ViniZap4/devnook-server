@@ -3,13 +3,12 @@ package handler
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 
-	"github.com/go-chi/chi/v5"
+	"github.com/gofiber/fiber/v2"
 )
 
 type createFileRequest struct {
@@ -80,17 +79,16 @@ func (h *Handler) commitToRepo(repoDir, branch, authorName, authorEmail, message
 }
 
 // CreateFile creates a new file via the API.
-func (h *Handler) CreateFile(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	owner := chi.URLParam(r, "owner")
-	name := chi.URLParam(r, "name")
-	path := chi.URLParam(r, "*")
+func (h *Handler) CreateFile(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	owner := c.Params("owner")
+	name := c.Params("name")
+	path := c.Params("*")
 
 	// Verify caller has write access
 	repoID, err := h.getRepoID(owner, name)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "repository not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "repository not found")
 	}
 	var repoOwnerID int64
 	h.db.QueryRow(context.Background(),
@@ -102,15 +100,13 @@ func (h *Handler) CreateFile(w http.ResponseWriter, r *http.Request) {
 			`SELECT permission FROM repo_collaborators WHERE repo_id = $1 AND user_id = $2`,
 			repoID, claims.UserID).Scan(&perm)
 		if err != nil || (perm != "write" && perm != "admin") {
-			writeError(w, http.StatusForbidden, "you don't have write access to this repository")
-			return
+			return writeError(c, fiber.StatusForbidden, "you don't have write access to this repository")
 		}
 	}
 
 	var req createFileRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 
 	branch := req.Branch
@@ -141,28 +137,25 @@ func (h *Handler) CreateFile(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		if strings.Contains(err.Error(), "already exists") {
-			writeError(w, http.StatusConflict, "file already exists")
-			return
+			return writeError(c, fiber.StatusConflict, "file already exists")
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return writeError(c, fiber.StatusInternalServerError, err.Error())
 	}
 
-	writeJSON(w, http.StatusCreated, map[string]string{"message": "file created"})
+	return writeJSON(c, fiber.StatusCreated, map[string]string{"message": "file created"})
 }
 
 // UpdateFile updates an existing file via the API.
-func (h *Handler) UpdateFile(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	owner := chi.URLParam(r, "owner")
-	name := chi.URLParam(r, "name")
-	path := chi.URLParam(r, "*")
+func (h *Handler) UpdateFile(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	owner := c.Params("owner")
+	name := c.Params("name")
+	path := c.Params("*")
 
 	// Verify caller has write access
 	repoID, err := h.getRepoID(owner, name)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "repository not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "repository not found")
 	}
 	var repoOwnerID int64
 	h.db.QueryRow(context.Background(),
@@ -174,15 +167,13 @@ func (h *Handler) UpdateFile(w http.ResponseWriter, r *http.Request) {
 			`SELECT permission FROM repo_collaborators WHERE repo_id = $1 AND user_id = $2`,
 			repoID, claims.UserID).Scan(&perm)
 		if err != nil || (perm != "write" && perm != "admin") {
-			writeError(w, http.StatusForbidden, "you don't have write access to this repository")
-			return
+			return writeError(c, fiber.StatusForbidden, "you don't have write access to this repository")
 		}
 	}
 
 	var req updateFileRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 
 	branch := req.Branch
@@ -206,25 +197,23 @@ func (h *Handler) UpdateFile(w http.ResponseWriter, r *http.Request) {
 		return os.WriteFile(filePath, []byte(req.Content), 0o644)
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return writeError(c, fiber.StatusInternalServerError, err.Error())
 	}
 
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
 // DeleteFile deletes a file via the API.
-func (h *Handler) DeleteFile(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	owner := chi.URLParam(r, "owner")
-	name := chi.URLParam(r, "name")
-	path := chi.URLParam(r, "*")
+func (h *Handler) DeleteFile(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	owner := c.Params("owner")
+	name := c.Params("name")
+	path := c.Params("*")
 
 	// Verify caller has write access
 	repoID, err := h.getRepoID(owner, name)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "repository not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "repository not found")
 	}
 	var repoOwnerID int64
 	h.db.QueryRow(context.Background(),
@@ -236,15 +225,13 @@ func (h *Handler) DeleteFile(w http.ResponseWriter, r *http.Request) {
 			`SELECT permission FROM repo_collaborators WHERE repo_id = $1 AND user_id = $2`,
 			repoID, claims.UserID).Scan(&perm)
 		if err != nil || (perm != "write" && perm != "admin") {
-			writeError(w, http.StatusForbidden, "you don't have write access to this repository")
-			return
+			return writeError(c, fiber.StatusForbidden, "you don't have write access to this repository")
 		}
 	}
 
 	var req deleteFileRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 
 	branch := req.Branch
@@ -268,9 +255,8 @@ func (h *Handler) DeleteFile(w http.ResponseWriter, r *http.Request) {
 		return os.Remove(filePath)
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return writeError(c, fiber.StatusInternalServerError, err.Error())
 	}
 
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }

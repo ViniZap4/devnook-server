@@ -1,18 +1,18 @@
 package handler
 
 import (
-	"net/http"
+	"bufio"
 	"os/exec"
 	"strings"
 
-	"github.com/go-chi/chi/v5"
+	"github.com/gofiber/fiber/v2"
 )
 
 // GetArchive returns a zip or tar.gz archive of the repository at a given ref.
-func (h *Handler) GetArchive(w http.ResponseWriter, r *http.Request) {
-	owner := chi.URLParam(r, "owner")
-	name := chi.URLParam(r, "name")
-	refFormat := chi.URLParam(r, "ref")
+func (h *Handler) GetArchive(c *fiber.Ctx) error {
+	owner := c.Params("owner")
+	name := c.Params("name")
+	refFormat := c.Params("ref")
 
 	repoDir := h.repoPath(owner, name)
 
@@ -31,19 +31,29 @@ func (h *Handler) GetArchive(w http.ResponseWriter, r *http.Request) {
 	prefix := name + "-" + ref + "/"
 
 	var cmd *exec.Cmd
+	var contentType, disposition string
 	if format == "zip" {
 		cmd = exec.Command("git", "-C", repoDir, "archive", "--format=zip", "--prefix="+prefix, ref)
-		w.Header().Set("Content-Type", "application/zip")
-		w.Header().Set("Content-Disposition", "attachment; filename=\""+name+"-"+ref+".zip\"")
+		contentType = "application/zip"
+		disposition = "attachment; filename=\"" + name + "-" + ref + ".zip\""
 	} else {
 		cmd = exec.Command("git", "-C", repoDir, "archive", "--format=tar.gz", "--prefix="+prefix, ref)
-		w.Header().Set("Content-Type", "application/gzip")
-		w.Header().Set("Content-Disposition", "attachment; filename=\""+name+"-"+ref+".tar.gz\"")
+		contentType = "application/gzip"
+		disposition = "attachment; filename=\"" + name + "-" + ref + ".tar.gz\""
 	}
 
-	cmd.Stdout = w
-	if err := cmd.Run(); err != nil {
-		writeError(w, http.StatusNotFound, "archive not available")
-		return
+	// Run command first to check for errors before streaming
+	out, err := cmd.Output()
+	if err != nil {
+		return writeError(c, fiber.StatusNotFound, "archive not available")
 	}
+
+	c.Set("Content-Type", contentType)
+	c.Set("Content-Disposition", disposition)
+
+	c.Context().SetBodyStreamWriter(func(w *bufio.Writer) {
+		w.Write(out)
+		w.Flush()
+	})
+	return nil
 }

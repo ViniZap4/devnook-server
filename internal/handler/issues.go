@@ -3,13 +3,12 @@ package handler
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/ViniZap4/devnook-server/internal/domain"
-	"github.com/go-chi/chi/v5"
+	"github.com/gofiber/fiber/v2"
 )
 
 type createIssueRequest struct {
@@ -98,26 +97,25 @@ func (h *Handler) loadIssueLabels(issueIDs []int64) (map[int64][]domain.Label, e
 	return result, nil
 }
 
-func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
-	owner := chi.URLParam(r, "owner")
-	name := chi.URLParam(r, "name")
+func (h *Handler) ListIssues(c *fiber.Ctx) error {
+	owner := c.Params("owner")
+	name := c.Params("name")
 
 	repoID, err := h.getRepoID(owner, name)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "repository not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "repository not found")
 	}
 
-	state := r.URL.Query().Get("state")
+	state := c.Query("state")
 	if state == "" {
 		state = "open"
 	}
-	labelFilter := r.URL.Query().Get("labels")
-	milestoneFilter := r.URL.Query().Get("milestone")
-	assigneeFilter := r.URL.Query().Get("assignee")
-	q := r.URL.Query().Get("q")
-	sortParam := r.URL.Query().Get("sort")
-	direction := r.URL.Query().Get("direction")
+	labelFilter := c.Query("labels")
+	milestoneFilter := c.Query("milestone")
+	assigneeFilter := c.Query("assignee")
+	q := c.Query("q")
+	sortParam := c.Query("sort")
+	direction := c.Query("direction")
 
 	// Build dynamic query
 	conditions := []string{"i.repo_id = $1"}
@@ -203,8 +201,7 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := h.db.Query(context.Background(), query, args...)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list issues")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to list issues")
 	}
 	defer rows.Close()
 
@@ -237,28 +234,25 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 	if issues == nil {
 		issues = []domain.Issue{}
 	}
-	writeJSON(w, http.StatusOK, issues)
+	return writeJSON(c, fiber.StatusOK, issues)
 }
 
-func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	owner := chi.URLParam(r, "owner")
-	name := chi.URLParam(r, "name")
+func (h *Handler) CreateIssue(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	owner := c.Params("owner")
+	name := c.Params("name")
 
 	repoID, err := h.getRepoID(owner, name)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "repository not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "repository not found")
 	}
 
 	var req createIssueRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 	if req.Title == "" {
-		writeError(w, http.StatusBadRequest, "title is required")
-		return
+		return writeError(c, fiber.StatusBadRequest, "title is required")
 	}
 	if req.Priority == "" {
 		req.Priority = "medium"
@@ -273,8 +267,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			t, err = time.Parse("2006-01-02", *req.DueDate)
 			if err != nil {
-				writeError(w, http.StatusBadRequest, "invalid due_date format")
-				return
+				return writeError(c, fiber.StatusBadRequest, "invalid due_date format")
 			}
 		}
 		dueDate = &t
@@ -283,8 +276,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	ctx := context.Background()
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to begin transaction")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to begin transaction")
 	}
 	defer tx.Rollback(ctx)
 
@@ -293,8 +285,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		`SELECT COALESCE(MAX(number), 0) + 1 FROM issues WHERE repo_id = $1`, repoID,
 	).Scan(&number)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to generate issue number")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to generate issue number")
 	}
 
 	var issueID int64
@@ -304,8 +295,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		repoID, number, claims.UserID, req.Title, req.Body, req.Priority, req.Type, dueDate, req.StoryPoints, req.MilestoneID, req.AssigneeID,
 	).Scan(&issueID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create issue")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to create issue")
 	}
 
 	// Attach labels
@@ -316,26 +306,23 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to commit")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to commit")
 	}
 
-	writeJSON(w, http.StatusCreated, map[string]interface{}{"id": issueID, "number": number})
+	return writeJSON(c, fiber.StatusCreated, map[string]interface{}{"id": issueID, "number": number})
 }
 
-func (h *Handler) GetIssue(w http.ResponseWriter, r *http.Request) {
-	owner := chi.URLParam(r, "owner")
-	name := chi.URLParam(r, "name")
-	number, err := strconv.Atoi(chi.URLParam(r, "number"))
+func (h *Handler) GetIssue(c *fiber.Ctx) error {
+	owner := c.Params("owner")
+	name := c.Params("name")
+	number, err := strconv.Atoi(c.Params("number"))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid issue number")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid issue number")
 	}
 
 	repoID, err := h.getRepoID(owner, name)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "repository not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "repository not found")
 	}
 
 	var issue domain.Issue
@@ -353,8 +340,7 @@ func (h *Handler) GetIssue(w http.ResponseWriter, r *http.Request) {
 		&issue.MilestoneID, &issue.AssigneeID, &issue.Assignee,
 		&issue.CreatedAt, &issue.UpdatedAt)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "issue not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "issue not found")
 	}
 
 	// Load labels
@@ -366,23 +352,21 @@ func (h *Handler) GetIssue(w http.ResponseWriter, r *http.Request) {
 		issue.Labels = []domain.Label{}
 	}
 
-	writeJSON(w, http.StatusOK, issue)
+	return writeJSON(c, fiber.StatusOK, issue)
 }
 
-func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	owner := chi.URLParam(r, "owner")
-	name := chi.URLParam(r, "name")
-	number, err := strconv.Atoi(chi.URLParam(r, "number"))
+func (h *Handler) UpdateIssue(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	owner := c.Params("owner")
+	name := c.Params("name")
+	number, err := strconv.Atoi(c.Params("number"))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid issue number")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid issue number")
 	}
 
 	repoID, err := h.getRepoID(owner, name)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "repository not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "repository not found")
 	}
 
 	// Verify caller is issue author or repo owner
@@ -391,18 +375,15 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		`SELECT i.author_id, r.owner_id FROM issues i JOIN repositories r ON r.id = i.repo_id
 		 WHERE i.repo_id = $1 AND i.number = $2`, repoID, number).Scan(&authorID, &repoOwnerID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "issue not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "issue not found")
 	}
 	if claims.UserID != authorID && claims.UserID != repoOwnerID {
-		writeError(w, http.StatusForbidden, "only the issue author or repo owner can update this issue")
-		return
+		return writeError(c, fiber.StatusForbidden, "only the issue author or repo owner can update this issue")
 	}
 
 	var req updateIssueRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 
 	// Build dynamic update
@@ -444,8 +425,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				t, err = time.Parse("2006-01-02", *req.DueDate)
 				if err != nil {
-					writeError(w, http.StatusBadRequest, "invalid due_date format")
-					return
+					return writeError(c, fiber.StatusBadRequest, "invalid due_date format")
 				}
 			}
 			sets = append(sets, fmt.Sprintf("due_date=$%d", argN))
@@ -478,8 +458,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(sets) == 0 {
-		w.WriteHeader(http.StatusNoContent)
-		return
+		return c.SendStatus(fiber.StatusNoContent)
 	}
 
 	sets = append(sets, "updated_at=NOW()")
@@ -488,25 +467,22 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	args = append(args, repoID, number)
 
 	if _, err := h.db.Exec(ctx, query, args...); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to update issue")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to update issue")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (h *Handler) ListIssueComments(w http.ResponseWriter, r *http.Request) {
-	owner := chi.URLParam(r, "owner")
-	name := chi.URLParam(r, "name")
-	number, err := strconv.Atoi(chi.URLParam(r, "number"))
+func (h *Handler) ListIssueComments(c *fiber.Ctx) error {
+	owner := c.Params("owner")
+	name := c.Params("name")
+	number, err := strconv.Atoi(c.Params("number"))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid issue number")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid issue number")
 	}
 
 	repoID, err := h.getRepoID(owner, name)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "repository not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "repository not found")
 	}
 
 	rows, err := h.db.Query(context.Background(),
@@ -517,8 +493,7 @@ func (h *Handler) ListIssueComments(w http.ResponseWriter, r *http.Request) {
 		 WHERE i.repo_id = $1 AND i.number = $2
 		 ORDER BY c.created_at`, repoID, number)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list comments")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to list comments")
 	}
 	defer rows.Close()
 
@@ -533,33 +508,29 @@ func (h *Handler) ListIssueComments(w http.ResponseWriter, r *http.Request) {
 	if comments == nil {
 		comments = []domain.IssueComment{}
 	}
-	writeJSON(w, http.StatusOK, comments)
+	return writeJSON(c, fiber.StatusOK, comments)
 }
 
-func (h *Handler) CreateIssueComment(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	owner := chi.URLParam(r, "owner")
-	name := chi.URLParam(r, "name")
-	number, err := strconv.Atoi(chi.URLParam(r, "number"))
+func (h *Handler) CreateIssueComment(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	owner := c.Params("owner")
+	name := c.Params("name")
+	number, err := strconv.Atoi(c.Params("number"))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid issue number")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid issue number")
 	}
 
 	repoID, err := h.getRepoID(owner, name)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "repository not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "repository not found")
 	}
 
 	var req commentRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 	if req.Body == "" {
-		writeError(w, http.StatusBadRequest, "body is required")
-		return
+		return writeError(c, fiber.StatusBadRequest, "body is required")
 	}
 
 	// Get issue ID
@@ -568,8 +539,7 @@ func (h *Handler) CreateIssueComment(w http.ResponseWriter, r *http.Request) {
 		`SELECT id FROM issues WHERE repo_id = $1 AND number = $2`, repoID, number,
 	).Scan(&issueID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "issue not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "issue not found")
 	}
 
 	var commentID int64
@@ -579,25 +549,22 @@ func (h *Handler) CreateIssueComment(w http.ResponseWriter, r *http.Request) {
 		issueID, claims.UserID, req.Body,
 	).Scan(&commentID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create comment")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to create comment")
 	}
 
-	writeJSON(w, http.StatusCreated, map[string]interface{}{"id": commentID})
+	return writeJSON(c, fiber.StatusCreated, map[string]interface{}{"id": commentID})
 }
 
-func (h *Handler) UpdateIssueComment(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+func (h *Handler) UpdateIssueComment(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	id, err := strconv.ParseInt(c.Params("id"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid comment id")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid comment id")
 	}
 
 	var req commentRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 
 	tag, err := h.db.Exec(context.Background(),
@@ -605,27 +572,24 @@ func (h *Handler) UpdateIssueComment(w http.ResponseWriter, r *http.Request) {
 		 WHERE id=$2 AND author_id=$3`,
 		req.Body, id, claims.UserID)
 	if err != nil || tag.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "comment not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "comment not found")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (h *Handler) DeleteIssueComment(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+func (h *Handler) DeleteIssueComment(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	id, err := strconv.ParseInt(c.Params("id"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid comment id")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid comment id")
 	}
 
 	tag, err := h.db.Exec(context.Background(),
 		`DELETE FROM issue_comments WHERE id=$1 AND author_id=$2`, id, claims.UserID)
 	if err != nil || tag.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "comment not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "comment not found")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
 type addIssueToProjectRequest struct {
@@ -635,28 +599,24 @@ type addIssueToProjectRequest struct {
 
 // AddIssueToProject creates a project_item linked to an existing issue.
 // Route: POST /repos/{owner}/{name}/issues/{number}/add-to-project
-func (h *Handler) AddIssueToProject(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	owner := chi.URLParam(r, "owner")
-	name := chi.URLParam(r, "name")
-	number, err := strconv.Atoi(chi.URLParam(r, "number"))
+func (h *Handler) AddIssueToProject(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	owner := c.Params("owner")
+	name := c.Params("name")
+	number, err := strconv.Atoi(c.Params("number"))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid issue number")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid issue number")
 	}
 
 	var req addIssueToProjectRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 	if req.ProjectSlug == "" {
-		writeError(w, http.StatusBadRequest, "project_slug is required")
-		return
+		return writeError(c, fiber.StatusBadRequest, "project_slug is required")
 	}
 	if req.ColumnID == 0 {
-		writeError(w, http.StatusBadRequest, "column_id is required")
-		return
+		return writeError(c, fiber.StatusBadRequest, "column_id is required")
 	}
 
 	ctx := context.Background()
@@ -664,8 +624,7 @@ func (h *Handler) AddIssueToProject(w http.ResponseWriter, r *http.Request) {
 	// Look up issue
 	repoID, err := h.getRepoID(owner, name)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "repository not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "repository not found")
 	}
 
 	var issue domain.Issue
@@ -674,20 +633,18 @@ func (h *Handler) AddIssueToProject(w http.ResponseWriter, r *http.Request) {
 		repoID, number,
 	).Scan(&issue.ID, &issue.Title, &issue.Type, &issue.Priority, &issue.StoryPoints)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "issue not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "issue not found")
 	}
 
 	// Look up project by slug, verifying the caller is a member
 	project, err := h.getProjectFull(req.ProjectSlug, claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "project not found or access denied")
-		return
+		return writeError(c, fiber.StatusNotFound, "project not found or access denied")
 	}
 
 	// Require at least member role (not viewer) to add items
-	if !h.requireProjectRole(w, project.ID, claims.UserID, "owner", "admin", "member") {
-		return
+	if !h.requireProjectRole(c, project.ID, claims.UserID, "owner", "admin", "member") {
+		return nil
 	}
 
 	// Verify the column belongs to this project
@@ -697,8 +654,7 @@ func (h *Handler) AddIssueToProject(w http.ResponseWriter, r *http.Request) {
 		req.ColumnID, project.ID,
 	).Scan(&colExists)
 	if !colExists {
-		writeError(w, http.StatusBadRequest, "column does not belong to this project")
-		return
+		return writeError(c, fiber.StatusBadRequest, "column does not belong to this project")
 	}
 
 	var itemID int64
@@ -711,9 +667,8 @@ func (h *Handler) AddIssueToProject(w http.ResponseWriter, r *http.Request) {
 		project.ID, req.ColumnID, issue.ID, issue.Title, issue.Type, issue.Priority, issue.StoryPoints,
 	).Scan(&itemID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to add issue to project")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to add issue to project")
 	}
 
-	writeJSON(w, http.StatusCreated, map[string]any{"id": itemID})
+	return writeJSON(c, fiber.StatusCreated, map[string]any{"id": itemID})
 }

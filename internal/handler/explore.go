@@ -1,12 +1,11 @@
 package handler
 
 import (
-	"context"
 	"math"
-	"net/http"
 	"strconv"
 
 	"github.com/ViniZap4/devnook-server/internal/domain"
+	"github.com/gofiber/fiber/v2"
 )
 
 type exploreResponse struct {
@@ -17,16 +16,16 @@ type exploreResponse struct {
 	TotalPages int                 `json:"total_pages"`
 }
 
-func (h *Handler) ExploreRepos(w http.ResponseWriter, r *http.Request) {
-	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+func (h *Handler) ExploreRepos(c *fiber.Ctx) error {
+	page, _ := strconv.Atoi(c.Query("page"))
 	if page < 1 {
 		page = 1
 	}
 	perPage := 20
 	offset := (page - 1) * perPage
 
-	q := r.URL.Query().Get("q")
-	sort := r.URL.Query().Get("sort")
+	q := c.Query("q")
+	sort := c.Query("sort")
 	if sort == "" {
 		sort = "updated"
 	}
@@ -43,7 +42,7 @@ func (h *Handler) ExploreRepos(w http.ResponseWriter, r *http.Request) {
 		orderBy = "r.forks_count DESC"
 	}
 
-	ctx := context.Background()
+	ctx := c.UserContext()
 
 	var totalCount int
 	if q != "" {
@@ -72,8 +71,7 @@ func (h *Handler) ExploreRepos(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list repos")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to list repos")
 	}
 	defer rows.Close()
 
@@ -89,7 +87,7 @@ func (h *Handler) ExploreRepos(w http.ResponseWriter, r *http.Request) {
 		repos = []domain.Repository{}
 	}
 
-	writeJSON(w, http.StatusOK, exploreResponse{
+	return writeJSON(c, fiber.StatusOK, exploreResponse{
 		Repos:      repos,
 		TotalCount: totalCount,
 		Page:       page,

@@ -3,13 +3,12 @@ package handler
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/ViniZap4/devnook-server/internal/domain"
-	"github.com/go-chi/chi/v5"
+	"github.com/gofiber/fiber/v2"
 )
 
 type milestoneRequest struct {
@@ -19,17 +18,16 @@ type milestoneRequest struct {
 	DueDate     *string `json:"due_date,omitempty"`
 }
 
-func (h *Handler) ListMilestones(w http.ResponseWriter, r *http.Request) {
-	owner := chi.URLParam(r, "owner")
-	name := chi.URLParam(r, "name")
+func (h *Handler) ListMilestones(c *fiber.Ctx) error {
+	owner := c.Params("owner")
+	name := c.Params("name")
 
 	repoID, err := h.getRepoID(owner, name)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "repository not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "repository not found")
 	}
 
-	state := r.URL.Query().Get("state")
+	state := c.Query("state")
 	if state == "" {
 		state = "open"
 	}
@@ -60,8 +58,7 @@ func (h *Handler) ListMilestones(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := h.db.Query(context.Background(), query, args...)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list milestones")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to list milestones")
 	}
 	defer rows.Close()
 
@@ -76,27 +73,24 @@ func (h *Handler) ListMilestones(w http.ResponseWriter, r *http.Request) {
 	if milestones == nil {
 		milestones = []domain.Milestone{}
 	}
-	writeJSON(w, http.StatusOK, milestones)
+	return writeJSON(c, fiber.StatusOK, milestones)
 }
 
-func (h *Handler) CreateMilestone(w http.ResponseWriter, r *http.Request) {
-	owner := chi.URLParam(r, "owner")
-	name := chi.URLParam(r, "name")
+func (h *Handler) CreateMilestone(c *fiber.Ctx) error {
+	owner := c.Params("owner")
+	name := c.Params("name")
 
 	repoID, err := h.getRepoID(owner, name)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "repository not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "repository not found")
 	}
 
 	var req milestoneRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 	if req.Title == "" {
-		writeError(w, http.StatusBadRequest, "title is required")
-		return
+		return writeError(c, fiber.StatusBadRequest, "title is required")
 	}
 
 	var dueDate *time.Time
@@ -105,8 +99,7 @@ func (h *Handler) CreateMilestone(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			t, err = time.Parse("2006-01-02", *req.DueDate)
 			if err != nil {
-				writeError(w, http.StatusBadRequest, "invalid due_date format")
-				return
+				return writeError(c, fiber.StatusBadRequest, "invalid due_date format")
 			}
 		}
 		dueDate = &t
@@ -118,23 +111,20 @@ func (h *Handler) CreateMilestone(w http.ResponseWriter, r *http.Request) {
 		repoID, req.Title, req.Description, dueDate,
 	).Scan(&id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create milestone")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to create milestone")
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"id": id})
+	return writeJSON(c, fiber.StatusCreated, map[string]any{"id": id})
 }
 
-func (h *Handler) UpdateMilestone(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+func (h *Handler) UpdateMilestone(c *fiber.Ctx) error {
+	id, err := strconv.ParseInt(c.Params("id"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid milestone id")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid milestone id")
 	}
 
 	var req milestoneRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 
 	ctx := context.Background()
@@ -172,8 +162,7 @@ func (h *Handler) UpdateMilestone(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(sets) == 0 {
-		w.WriteHeader(http.StatusNoContent)
-		return
+		return c.SendStatus(fiber.StatusNoContent)
 	}
 
 	sets = append(sets, "updated_at=NOW()")
@@ -182,23 +171,20 @@ func (h *Handler) UpdateMilestone(w http.ResponseWriter, r *http.Request) {
 	args = append(args, id)
 
 	if _, err := h.db.Exec(ctx, query, args...); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to update milestone")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to update milestone")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (h *Handler) DeleteMilestone(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+func (h *Handler) DeleteMilestone(c *fiber.Ctx) error {
+	id, err := strconv.ParseInt(c.Params("id"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid milestone id")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid milestone id")
 	}
 
 	tag, err := h.db.Exec(context.Background(), `DELETE FROM milestones WHERE id = $1`, id)
 	if err != nil || tag.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "milestone not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "milestone not found")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }

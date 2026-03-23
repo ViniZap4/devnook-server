@@ -1,7 +1,7 @@
 package handler
 
 import (
-	"net/http"
+	"github.com/gofiber/fiber/v2"
 )
 
 type Preferences struct {
@@ -11,9 +11,9 @@ type Preferences struct {
 	Settings map[string]any `json:"settings"`
 }
 
-func (h *Handler) GetPreferences(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	ctx := r.Context()
+func (h *Handler) GetPreferences(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	ctx := c.UserContext()
 
 	var prefs Preferences
 	err := h.db.QueryRow(ctx,
@@ -31,17 +31,16 @@ func (h *Handler) GetPreferences(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, http.StatusOK, prefs)
+	return writeJSON(c, fiber.StatusOK, prefs)
 }
 
-func (h *Handler) UpdatePreferences(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	ctx := r.Context()
+func (h *Handler) UpdatePreferences(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	ctx := c.UserContext()
 
 	var prefs Preferences
-	if err := readJSON(r, &prefs); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &prefs); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 
 	if prefs.Theme == "" {
@@ -68,9 +67,8 @@ func (h *Handler) UpdatePreferences(w http.ResponseWriter, r *http.Request) {
 		claims.UserID, prefs.Theme, prefs.Mode, prefs.Locale, prefs.Settings,
 	)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to save preferences")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to save preferences")
 	}
 
-	writeJSON(w, http.StatusOK, prefs)
+	return writeJSON(c, fiber.StatusOK, prefs)
 }

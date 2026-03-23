@@ -2,12 +2,11 @@ package handler
 
 import (
 	"context"
-	"net/http"
 	"regexp"
 	"strings"
 
 	"github.com/ViniZap4/devnook-server/internal/domain"
-	"github.com/go-chi/chi/v5"
+	"github.com/gofiber/fiber/v2"
 )
 
 var slugRe = regexp.MustCompile(`[^a-z0-9]+`)
@@ -19,8 +18,8 @@ func toSlug(s string) string {
 
 // --- Spaces ---
 
-func (h *Handler) ListDocSpaces(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
+func (h *Handler) ListDocSpaces(c *fiber.Ctx) error {
+	claims := getClaims(c)
 	rows, err := h.db.Query(context.Background(),
 		`SELECT s.id, s.name, s.slug, s.description, s.icon, s.owner_type,
 		        s.owner_id, s.owner_name, s.repo_owner, s.repo_name, s.org_name,
@@ -29,8 +28,7 @@ func (h *Handler) ListDocSpaces(w http.ResponseWriter, r *http.Request) {
 		 WHERE s.owner_id = $1 OR s.is_public = true
 		 ORDER BY s.updated_at DESC`, claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list spaces")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to list spaces")
 	}
 	defer rows.Close()
 
@@ -47,12 +45,12 @@ func (h *Handler) ListDocSpaces(w http.ResponseWriter, r *http.Request) {
 	if spaces == nil {
 		spaces = []domain.DocSpace{}
 	}
-	writeJSON(w, http.StatusOK, spaces)
+	return writeJSON(c, fiber.StatusOK, spaces)
 }
 
-func (h *Handler) GetDocSpace(w http.ResponseWriter, r *http.Request) {
-	slug := chi.URLParam(r, "spaceSlug")
-	claims := getClaims(r)
+func (h *Handler) GetDocSpace(c *fiber.Ctx) error {
+	slug := c.Params("spaceSlug")
+	claims := getClaims(c)
 
 	var s domain.DocSpace
 	err := h.db.QueryRow(context.Background(),
@@ -65,10 +63,9 @@ func (h *Handler) GetDocSpace(w http.ResponseWriter, r *http.Request) {
 			&s.OwnerType, &s.OwnerID, &s.OwnerName, &s.RepoOwner, &s.RepoName,
 			&s.OrgName, &s.IsPublic, &s.CreatedAt, &s.UpdatedAt)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "space not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "space not found")
 	}
-	writeJSON(w, http.StatusOK, s)
+	return writeJSON(c, fiber.StatusOK, s)
 }
 
 type createSpaceRequest struct {
@@ -82,16 +79,14 @@ type createSpaceRequest struct {
 	IsPublic    bool   `json:"is_public"`
 }
 
-func (h *Handler) CreateDocSpace(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
+func (h *Handler) CreateDocSpace(c *fiber.Ctx) error {
+	claims := getClaims(c)
 	var req createSpaceRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 	if req.Name == "" {
-		writeError(w, http.StatusBadRequest, "name is required")
-		return
+		return writeError(c, fiber.StatusBadRequest, "name is required")
 	}
 
 	ownerType := req.OwnerType
@@ -111,10 +106,9 @@ func (h *Handler) CreateDocSpace(w http.ResponseWriter, r *http.Request) {
 		claims.UserID, claims.Username, req.RepoOwner, req.RepoName, req.OrgName, req.IsPublic,
 	).Scan(&id, &resultSlug)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create space")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to create space")
 	}
-	writeJSON(w, http.StatusCreated, map[string]interface{}{"id": id, "slug": resultSlug})
+	return writeJSON(c, fiber.StatusCreated, map[string]interface{}{"id": id, "slug": resultSlug})
 }
 
 type updateSpaceRequest struct {
@@ -124,14 +118,13 @@ type updateSpaceRequest struct {
 	IsPublic    *bool   `json:"is_public"`
 }
 
-func (h *Handler) UpdateDocSpace(w http.ResponseWriter, r *http.Request) {
-	slug := chi.URLParam(r, "spaceSlug")
-	claims := getClaims(r)
+func (h *Handler) UpdateDocSpace(c *fiber.Ctx) error {
+	slug := c.Params("spaceSlug")
+	claims := getClaims(c)
 
 	var req updateSpaceRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 
 	tag, err := h.db.Exec(context.Background(),
@@ -144,30 +137,28 @@ func (h *Handler) UpdateDocSpace(w http.ResponseWriter, r *http.Request) {
 		 WHERE slug = $5 AND owner_id = $6`,
 		req.Name, req.Description, req.Icon, req.IsPublic, slug, claims.UserID)
 	if err != nil || tag.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "space not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "space not found")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (h *Handler) DeleteDocSpace(w http.ResponseWriter, r *http.Request) {
-	slug := chi.URLParam(r, "spaceSlug")
-	claims := getClaims(r)
+func (h *Handler) DeleteDocSpace(c *fiber.Ctx) error {
+	slug := c.Params("spaceSlug")
+	claims := getClaims(c)
 
 	tag, err := h.db.Exec(context.Background(),
 		`DELETE FROM doc_spaces WHERE slug = $1 AND owner_id = $2`, slug, claims.UserID)
 	if err != nil || tag.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "space not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "space not found")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
 // --- Pages ---
 
-func (h *Handler) ListDocPages(w http.ResponseWriter, r *http.Request) {
-	spaceSlug := chi.URLParam(r, "spaceSlug")
-	claims := getClaims(r)
+func (h *Handler) ListDocPages(c *fiber.Ctx) error {
+	spaceSlug := c.Params("spaceSlug")
+	claims := getClaims(c)
 
 	// Verify space access
 	var spaceID int64
@@ -175,8 +166,7 @@ func (h *Handler) ListDocPages(w http.ResponseWriter, r *http.Request) {
 		`SELECT id FROM doc_spaces WHERE slug = $1 AND (owner_id = $2 OR is_public = true)`,
 		spaceSlug, claims.UserID).Scan(&spaceID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "space not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "space not found")
 	}
 
 	rows, err := h.db.Query(context.Background(),
@@ -189,8 +179,7 @@ func (h *Handler) ListDocPages(w http.ResponseWriter, r *http.Request) {
 		 WHERE p.space_id = $1
 		 ORDER BY p.position, p.created_at`, spaceID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list pages")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to list pages")
 	}
 	defer rows.Close()
 
@@ -207,13 +196,13 @@ func (h *Handler) ListDocPages(w http.ResponseWriter, r *http.Request) {
 	if pages == nil {
 		pages = []domain.DocPage{}
 	}
-	writeJSON(w, http.StatusOK, pages)
+	return writeJSON(c, fiber.StatusOK, pages)
 }
 
-func (h *Handler) GetDocPage(w http.ResponseWriter, r *http.Request) {
-	spaceSlug := chi.URLParam(r, "spaceSlug")
-	pageSlug := chi.URLParam(r, "pageSlug")
-	claims := getClaims(r)
+func (h *Handler) GetDocPage(c *fiber.Ctx) error {
+	spaceSlug := c.Params("spaceSlug")
+	pageSlug := c.Params("pageSlug")
+	claims := getClaims(c)
 
 	var p domain.DocPage
 	err := h.db.QueryRow(context.Background(),
@@ -230,10 +219,9 @@ func (h *Handler) GetDocPage(w http.ResponseWriter, r *http.Request) {
 			&p.Icon, &p.AuthorUsername, &p.Position, &p.IsPublished,
 			&p.LastEditedBy, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "page not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "page not found")
 	}
-	writeJSON(w, http.StatusOK, p)
+	return writeJSON(c, fiber.StatusOK, p)
 }
 
 type createPageRequest struct {
@@ -243,18 +231,16 @@ type createPageRequest struct {
 	ParentID *int64 `json:"parent_id"`
 }
 
-func (h *Handler) CreateDocPage(w http.ResponseWriter, r *http.Request) {
-	spaceSlug := chi.URLParam(r, "spaceSlug")
-	claims := getClaims(r)
+func (h *Handler) CreateDocPage(c *fiber.Ctx) error {
+	spaceSlug := c.Params("spaceSlug")
+	claims := getClaims(c)
 
 	var req createPageRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 	if req.Title == "" {
-		writeError(w, http.StatusBadRequest, "title is required")
-		return
+		return writeError(c, fiber.StatusBadRequest, "title is required")
 	}
 
 	// Get space
@@ -263,8 +249,7 @@ func (h *Handler) CreateDocPage(w http.ResponseWriter, r *http.Request) {
 		`SELECT id FROM doc_spaces WHERE slug = $1 AND owner_id = $2`,
 		spaceSlug, claims.UserID).Scan(&spaceID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "space not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "space not found")
 	}
 
 	slug := toSlug(req.Title)
@@ -285,15 +270,14 @@ func (h *Handler) CreateDocPage(w http.ResponseWriter, r *http.Request) {
 		claims.UserID, maxPos+1,
 	).Scan(&id, &resultSlug)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create page")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to create page")
 	}
 
 	// Update space timestamp
 	h.db.Exec(context.Background(),
 		`UPDATE doc_spaces SET updated_at = NOW() WHERE id = $1`, spaceID)
 
-	writeJSON(w, http.StatusCreated, map[string]interface{}{"id": id, "slug": resultSlug})
+	return writeJSON(c, fiber.StatusCreated, map[string]interface{}{"id": id, "slug": resultSlug})
 }
 
 type updatePageRequest struct {
@@ -304,15 +288,14 @@ type updatePageRequest struct {
 	IsPublished *bool   `json:"is_published"`
 }
 
-func (h *Handler) UpdateDocPage(w http.ResponseWriter, r *http.Request) {
-	spaceSlug := chi.URLParam(r, "spaceSlug")
-	pageSlug := chi.URLParam(r, "pageSlug")
-	claims := getClaims(r)
+func (h *Handler) UpdateDocPage(c *fiber.Ctx) error {
+	spaceSlug := c.Params("spaceSlug")
+	pageSlug := c.Params("pageSlug")
+	claims := getClaims(c)
 
 	var req updatePageRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 
 	// Get page ID and current content for versioning
@@ -325,8 +308,7 @@ func (h *Handler) UpdateDocPage(w http.ResponseWriter, r *http.Request) {
 		 WHERE s.slug = $1 AND p.slug = $2 AND s.owner_id = $3`,
 		spaceSlug, pageSlug, claims.UserID).Scan(&pageID, &oldTitle, &oldContent)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "page not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "page not found")
 	}
 
 	// Save version before updating
@@ -348,8 +330,7 @@ func (h *Handler) UpdateDocPage(w http.ResponseWriter, r *http.Request) {
 		req.Title, req.Content, req.Icon, req.Position, req.IsPublished,
 		claims.UserID, pageID)
 	if err != nil || tag.RowsAffected() == 0 {
-		writeError(w, http.StatusInternalServerError, "failed to update page")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to update page")
 	}
 
 	// Update space timestamp
@@ -357,13 +338,13 @@ func (h *Handler) UpdateDocPage(w http.ResponseWriter, r *http.Request) {
 		`UPDATE doc_spaces SET updated_at = NOW()
 		 WHERE id = (SELECT space_id FROM doc_pages WHERE id = $1)`, pageID)
 
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (h *Handler) DeleteDocPage(w http.ResponseWriter, r *http.Request) {
-	spaceSlug := chi.URLParam(r, "spaceSlug")
-	pageSlug := chi.URLParam(r, "pageSlug")
-	claims := getClaims(r)
+func (h *Handler) DeleteDocPage(c *fiber.Ctx) error {
+	spaceSlug := c.Params("spaceSlug")
+	pageSlug := c.Params("pageSlug")
+	claims := getClaims(c)
 
 	tag, err := h.db.Exec(context.Background(),
 		`DELETE FROM doc_pages p
@@ -371,18 +352,17 @@ func (h *Handler) DeleteDocPage(w http.ResponseWriter, r *http.Request) {
 		 WHERE p.space_id = s.id AND s.slug = $1 AND p.slug = $2 AND s.owner_id = $3`,
 		spaceSlug, pageSlug, claims.UserID)
 	if err != nil || tag.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "page not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "page not found")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
 // --- Page Versions ---
 
-func (h *Handler) ListDocPageVersions(w http.ResponseWriter, r *http.Request) {
-	spaceSlug := chi.URLParam(r, "spaceSlug")
-	pageSlug := chi.URLParam(r, "pageSlug")
-	claims := getClaims(r)
+func (h *Handler) ListDocPageVersions(c *fiber.Ctx) error {
+	spaceSlug := c.Params("spaceSlug")
+	pageSlug := c.Params("pageSlug")
+	claims := getClaims(c)
 
 	rows, err := h.db.Query(context.Background(),
 		`SELECT v.id, v.page_id, v.title, v.content, u.username, v.commit_hash, v.created_at
@@ -394,8 +374,7 @@ func (h *Handler) ListDocPageVersions(w http.ResponseWriter, r *http.Request) {
 		 ORDER BY v.created_at DESC`,
 		spaceSlug, pageSlug, claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list versions")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to list versions")
 	}
 	defer rows.Close()
 
@@ -411,5 +390,5 @@ func (h *Handler) ListDocPageVersions(w http.ResponseWriter, r *http.Request) {
 	if versions == nil {
 		versions = []domain.DocPageVersion{}
 	}
-	writeJSON(w, http.StatusOK, versions)
+	return writeJSON(c, fiber.StatusOK, versions)
 }

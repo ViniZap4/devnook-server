@@ -3,12 +3,11 @@ package handler
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/ViniZap4/devnook-server/internal/domain"
-	"github.com/go-chi/chi/v5"
+	"github.com/gofiber/fiber/v2"
 )
 
 // sprintColumns is the SELECT list for project_sprints with computed aggregate fields.
@@ -34,14 +33,13 @@ func scanSprint(s *domain.ProjectSprint) []any {
 	}
 }
 
-func (h *Handler) ListProjectSprints(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	slug := chi.URLParam(r, "projectSlug")
+func (h *Handler) ListProjectSprints(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	slug := c.Params("projectSlug")
 
 	project, err := h.getProjectFull(slug, claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "project not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "project not found")
 	}
 
 	rows, err := h.db.Query(context.Background(),
@@ -49,8 +47,7 @@ func (h *Handler) ListProjectSprints(w http.ResponseWriter, r *http.Request) {
 		project.ID,
 	)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list sprints")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to list sprints")
 	}
 	defer rows.Close()
 
@@ -65,7 +62,7 @@ func (h *Handler) ListProjectSprints(w http.ResponseWriter, r *http.Request) {
 	if sprints == nil {
 		sprints = []domain.ProjectSprint{}
 	}
-	writeJSON(w, http.StatusOK, sprints)
+	return writeJSON(c, fiber.StatusOK, sprints)
 }
 
 type createSprintRequest struct {
@@ -75,35 +72,30 @@ type createSprintRequest struct {
 	EndDate   *string `json:"end_date,omitempty"`
 }
 
-func (h *Handler) CreateProjectSprint(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	slug := chi.URLParam(r, "projectSlug")
+func (h *Handler) CreateProjectSprint(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	slug := c.Params("projectSlug")
 
 	project, err := h.getProjectFull(slug, claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "project not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "project not found")
 	}
 
 	var req createSprintRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 	if req.Name == "" {
-		writeError(w, http.StatusBadRequest, "name is required")
-		return
+		return writeError(c, fiber.StatusBadRequest, "name is required")
 	}
 
 	startDate, err := parseOptionalDate(req.StartDate)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid start_date format")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid start_date format")
 	}
 	endDate, err := parseOptionalDate(req.EndDate)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid end_date format")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid end_date format")
 	}
 
 	var id int64
@@ -116,25 +108,22 @@ func (h *Handler) CreateProjectSprint(w http.ResponseWriter, r *http.Request) {
 		project.ID, req.Name, req.Goal, startDate, endDate,
 	).Scan(&id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create sprint")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to create sprint")
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"id": id})
+	return writeJSON(c, fiber.StatusCreated, map[string]any{"id": id})
 }
 
-func (h *Handler) GetProjectSprint(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	slug := chi.URLParam(r, "projectSlug")
-	sprintID, err := strconv.ParseInt(chi.URLParam(r, "sprintId"), 10, 64)
+func (h *Handler) GetProjectSprint(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	slug := c.Params("projectSlug")
+	sprintID, err := strconv.ParseInt(c.Params("sprintId"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid sprint id")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid sprint id")
 	}
 
 	project, err := h.getProjectFull(slug, claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "project not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "project not found")
 	}
 
 	var s domain.ProjectSprint
@@ -143,10 +132,9 @@ func (h *Handler) GetProjectSprint(w http.ResponseWriter, r *http.Request) {
 		sprintID, project.ID,
 	).Scan(scanSprint(&s)...)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "sprint not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "sprint not found")
 	}
-	writeJSON(w, http.StatusOK, s)
+	return writeJSON(c, fiber.StatusOK, s)
 }
 
 type updateSprintRequest struct {
@@ -156,25 +144,22 @@ type updateSprintRequest struct {
 	EndDate   *string `json:"end_date,omitempty"`
 }
 
-func (h *Handler) UpdateProjectSprint(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	slug := chi.URLParam(r, "projectSlug")
-	sprintID, err := strconv.ParseInt(chi.URLParam(r, "sprintId"), 10, 64)
+func (h *Handler) UpdateProjectSprint(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	slug := c.Params("projectSlug")
+	sprintID, err := strconv.ParseInt(c.Params("sprintId"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid sprint id")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid sprint id")
 	}
 
 	project, err := h.getProjectFull(slug, claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "project not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "project not found")
 	}
 
 	var req updateSprintRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 
 	ctx := context.Background()
@@ -198,8 +183,7 @@ func (h *Handler) UpdateProjectSprint(w http.ResponseWriter, r *http.Request) {
 		} else {
 			t, err := parseOptionalDate(req.StartDate)
 			if err != nil {
-				writeError(w, http.StatusBadRequest, "invalid start_date format")
-				return
+				return writeError(c, fiber.StatusBadRequest, "invalid start_date format")
 			}
 			sets = append(sets, fmt.Sprintf("start_date=$%d", argN))
 			args = append(args, t)
@@ -212,8 +196,7 @@ func (h *Handler) UpdateProjectSprint(w http.ResponseWriter, r *http.Request) {
 		} else {
 			t, err := parseOptionalDate(req.EndDate)
 			if err != nil {
-				writeError(w, http.StatusBadRequest, "invalid end_date format")
-				return
+				return writeError(c, fiber.StatusBadRequest, "invalid end_date format")
 			}
 			sets = append(sets, fmt.Sprintf("end_date=$%d", argN))
 			args = append(args, t)
@@ -222,8 +205,7 @@ func (h *Handler) UpdateProjectSprint(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(sets) == 0 {
-		w.WriteHeader(http.StatusNoContent)
-		return
+		return c.SendStatus(fiber.StatusNoContent)
 	}
 
 	sets = append(sets, "updated_at=NOW()")
@@ -233,25 +215,22 @@ func (h *Handler) UpdateProjectSprint(w http.ResponseWriter, r *http.Request) {
 
 	tag, err := h.db.Exec(ctx, query, args...)
 	if err != nil || tag.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "sprint not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "sprint not found")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (h *Handler) DeleteProjectSprint(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	slug := chi.URLParam(r, "projectSlug")
-	sprintID, err := strconv.ParseInt(chi.URLParam(r, "sprintId"), 10, 64)
+func (h *Handler) DeleteProjectSprint(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	slug := c.Params("projectSlug")
+	sprintID, err := strconv.ParseInt(c.Params("sprintId"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid sprint id")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid sprint id")
 	}
 
 	project, err := h.getProjectFull(slug, claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "project not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "project not found")
 	}
 
 	tag, err := h.db.Exec(context.Background(),
@@ -259,25 +238,22 @@ func (h *Handler) DeleteProjectSprint(w http.ResponseWriter, r *http.Request) {
 		sprintID, project.ID,
 	)
 	if err != nil || tag.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "sprint not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "sprint not found")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (h *Handler) StartProjectSprint(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	slug := chi.URLParam(r, "projectSlug")
-	sprintID, err := strconv.ParseInt(chi.URLParam(r, "sprintId"), 10, 64)
+func (h *Handler) StartProjectSprint(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	slug := c.Params("projectSlug")
+	sprintID, err := strconv.ParseInt(c.Params("sprintId"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid sprint id")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid sprint id")
 	}
 
 	project, err := h.getProjectFull(slug, claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "project not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "project not found")
 	}
 
 	ctx := context.Background()
@@ -289,12 +265,10 @@ func (h *Handler) StartProjectSprint(w http.ResponseWriter, r *http.Request) {
 		project.ID, sprintID,
 	).Scan(&activeCount)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to check active sprints")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to check active sprints")
 	}
 	if activeCount > 0 {
-		writeError(w, http.StatusConflict, "another sprint is already active for this project")
-		return
+		return writeError(c, fiber.StatusConflict, "another sprint is already active for this project")
 	}
 
 	tag, err := h.db.Exec(ctx,
@@ -306,25 +280,22 @@ func (h *Handler) StartProjectSprint(w http.ResponseWriter, r *http.Request) {
 		sprintID, project.ID,
 	)
 	if err != nil || tag.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "sprint not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "sprint not found")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (h *Handler) CompleteProjectSprint(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	slug := chi.URLParam(r, "projectSlug")
-	sprintID, err := strconv.ParseInt(chi.URLParam(r, "sprintId"), 10, 64)
+func (h *Handler) CompleteProjectSprint(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	slug := c.Params("projectSlug")
+	sprintID, err := strconv.ParseInt(c.Params("sprintId"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid sprint id")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid sprint id")
 	}
 
 	project, err := h.getProjectFull(slug, claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "project not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "project not found")
 	}
 
 	ctx := context.Background()
@@ -339,8 +310,7 @@ func (h *Handler) CompleteProjectSprint(w http.ResponseWriter, r *http.Request) 
 		sprintID,
 	).Scan(&velocity)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to calculate velocity")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to calculate velocity")
 	}
 
 	tag, err := h.db.Exec(ctx,
@@ -353,8 +323,7 @@ func (h *Handler) CompleteProjectSprint(w http.ResponseWriter, r *http.Request) 
 		velocity, sprintID, project.ID,
 	)
 	if err != nil || tag.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "sprint not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "sprint not found")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }

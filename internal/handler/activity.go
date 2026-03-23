@@ -1,9 +1,9 @@
 package handler
 
 import (
-	"context"
-	"net/http"
 	"time"
+
+	"github.com/gofiber/fiber/v2"
 )
 
 type ActivityItem struct {
@@ -17,9 +17,9 @@ type ActivityItem struct {
 }
 
 // GetDashboardActivity returns recent activity for the authenticated user.
-func (h *Handler) GetDashboardActivity(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	ctx := context.Background()
+func (h *Handler) GetDashboardActivity(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	ctx := c.UserContext()
 
 	var items []ActivityItem
 
@@ -84,5 +84,5 @@ func (h *Handler) GetDashboardActivity(w http.ResponseWriter, r *http.Request) {
 		items = []ActivityItem{}
 	}
 
-	writeJSON(w, http.StatusOK, items)
+	return writeJSON(c, fiber.StatusOK, items)
 }

@@ -2,21 +2,19 @@ package handler
 
 import (
 	"context"
-	"net/http"
 	"strconv"
 
 	"github.com/ViniZap4/devnook-server/internal/domain"
-	"github.com/go-chi/chi/v5"
+	"github.com/gofiber/fiber/v2"
 )
 
-func (h *Handler) ListShortcuts(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
+func (h *Handler) ListShortcuts(c *fiber.Ctx) error {
+	claims := getClaims(c)
 	rows, err := h.db.Query(context.Background(),
 		`SELECT id, user_id, title, url, icon_url, color, created_at, updated_at
 		 FROM shortcuts WHERE user_id = $1 ORDER BY created_at`, claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list shortcuts")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to list shortcuts")
 	}
 	defer rows.Close()
 
@@ -31,7 +29,7 @@ func (h *Handler) ListShortcuts(w http.ResponseWriter, r *http.Request) {
 	if shortcuts == nil {
 		shortcuts = []domain.Shortcut{}
 	}
-	writeJSON(w, http.StatusOK, shortcuts)
+	return writeJSON(c, fiber.StatusOK, shortcuts)
 }
 
 type shortcutRequest struct {
@@ -41,16 +39,14 @@ type shortcutRequest struct {
 	Color   string `json:"color"`
 }
 
-func (h *Handler) CreateShortcut(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
+func (h *Handler) CreateShortcut(c *fiber.Ctx) error {
+	claims := getClaims(c)
 	var req shortcutRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 	if req.Title == "" || req.URL == "" {
-		writeError(w, http.StatusBadRequest, "title and url are required")
-		return
+		return writeError(c, fiber.StatusBadRequest, "title and url are required")
 	}
 
 	var id int64
@@ -60,25 +56,22 @@ func (h *Handler) CreateShortcut(w http.ResponseWriter, r *http.Request) {
 		claims.UserID, req.Title, req.URL, req.IconURL, req.Color,
 	).Scan(&id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create shortcut")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to create shortcut")
 	}
 
-	writeJSON(w, http.StatusCreated, map[string]interface{}{"id": id})
+	return writeJSON(c, fiber.StatusCreated, map[string]interface{}{"id": id})
 }
 
-func (h *Handler) UpdateShortcut(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+func (h *Handler) UpdateShortcut(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	id, err := strconv.ParseInt(c.Params("id"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid shortcut id")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid shortcut id")
 	}
 
 	var req shortcutRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 
 	tag, err := h.db.Exec(context.Background(),
@@ -86,25 +79,22 @@ func (h *Handler) UpdateShortcut(w http.ResponseWriter, r *http.Request) {
 		 WHERE id=$5 AND user_id=$6`,
 		req.Title, req.URL, req.IconURL, req.Color, id, claims.UserID)
 	if err != nil || tag.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "shortcut not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "shortcut not found")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (h *Handler) DeleteShortcut(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+func (h *Handler) DeleteShortcut(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	id, err := strconv.ParseInt(c.Params("id"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid shortcut id")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid shortcut id")
 	}
 
 	tag, err := h.db.Exec(context.Background(),
 		`DELETE FROM shortcuts WHERE id=$1 AND user_id=$2`, id, claims.UserID)
 	if err != nil || tag.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "shortcut not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "shortcut not found")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }

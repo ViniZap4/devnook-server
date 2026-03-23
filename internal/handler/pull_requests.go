@@ -3,14 +3,13 @@ package handler
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"os/exec"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/ViniZap4/devnook-server/internal/domain"
-	"github.com/go-chi/chi/v5"
+	"github.com/gofiber/fiber/v2"
 )
 
 type createPRRequest struct {
@@ -26,17 +25,16 @@ type updatePRRequest struct {
 	State *string `json:"state,omitempty"`
 }
 
-func (h *Handler) ListPullRequests(w http.ResponseWriter, r *http.Request) {
-	owner := chi.URLParam(r, "owner")
-	name := chi.URLParam(r, "name")
+func (h *Handler) ListPullRequests(c *fiber.Ctx) error {
+	owner := c.Params("owner")
+	name := c.Params("name")
 
 	repoID, err := h.getRepoID(owner, name)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "repository not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "repository not found")
 	}
 
-	state := r.URL.Query().Get("state")
+	state := c.Query("state")
 	if state == "" {
 		state = "open"
 	}
@@ -59,8 +57,7 @@ func (h *Handler) ListPullRequests(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := h.db.Query(context.Background(), query, args...)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list pull requests")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to list pull requests")
 	}
 	defer rows.Close()
 
@@ -77,35 +74,31 @@ func (h *Handler) ListPullRequests(w http.ResponseWriter, r *http.Request) {
 	if prs == nil {
 		prs = []domain.PullRequest{}
 	}
-	writeJSON(w, http.StatusOK, prs)
+	return writeJSON(c, fiber.StatusOK, prs)
 }
 
-func (h *Handler) CreatePullRequest(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	owner := chi.URLParam(r, "owner")
-	name := chi.URLParam(r, "name")
+func (h *Handler) CreatePullRequest(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	owner := c.Params("owner")
+	name := c.Params("name")
 
 	repoID, err := h.getRepoID(owner, name)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "repository not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "repository not found")
 	}
 
 	var req createPRRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 	if req.Title == "" || req.HeadBranch == "" || req.BaseBranch == "" {
-		writeError(w, http.StatusBadRequest, "title, head_branch, and base_branch are required")
-		return
+		return writeError(c, fiber.StatusBadRequest, "title, head_branch, and base_branch are required")
 	}
 
 	ctx := context.Background()
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to begin transaction")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to begin transaction")
 	}
 	defer tx.Rollback(ctx)
 
@@ -118,8 +111,7 @@ func (h *Handler) CreatePullRequest(w http.ResponseWriter, r *http.Request) {
 		), 0) + 1`, repoID,
 	).Scan(&number)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to generate PR number")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to generate PR number")
 	}
 
 	var prID int64
@@ -129,31 +121,27 @@ func (h *Handler) CreatePullRequest(w http.ResponseWriter, r *http.Request) {
 		repoID, number, claims.UserID, req.Title, req.Body, req.HeadBranch, req.BaseBranch,
 	).Scan(&prID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create pull request")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to create pull request")
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to commit")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to commit")
 	}
 
-	writeJSON(w, http.StatusCreated, map[string]any{"id": prID, "number": number})
+	return writeJSON(c, fiber.StatusCreated, map[string]any{"id": prID, "number": number})
 }
 
-func (h *Handler) GetPullRequest(w http.ResponseWriter, r *http.Request) {
-	owner := chi.URLParam(r, "owner")
-	name := chi.URLParam(r, "name")
-	number, err := strconv.Atoi(chi.URLParam(r, "number"))
+func (h *Handler) GetPullRequest(c *fiber.Ctx) error {
+	owner := c.Params("owner")
+	name := c.Params("name")
+	number, err := strconv.Atoi(c.Params("number"))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid PR number")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid PR number")
 	}
 
 	repoID, err := h.getRepoID(owner, name)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "repository not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "repository not found")
 	}
 
 	var pr domain.PullRequest
@@ -166,26 +154,23 @@ func (h *Handler) GetPullRequest(w http.ResponseWriter, r *http.Request) {
 		&pr.Title, &pr.Body, &pr.State, &pr.HeadBranch, &pr.BaseBranch,
 		&pr.MergedAt, &pr.MergedBy, &pr.CreatedAt, &pr.UpdatedAt)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "pull request not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "pull request not found")
 	}
-	writeJSON(w, http.StatusOK, pr)
+	return writeJSON(c, fiber.StatusOK, pr)
 }
 
-func (h *Handler) UpdatePullRequest(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	owner := chi.URLParam(r, "owner")
-	name := chi.URLParam(r, "name")
-	number, err := strconv.Atoi(chi.URLParam(r, "number"))
+func (h *Handler) UpdatePullRequest(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	owner := c.Params("owner")
+	name := c.Params("name")
+	number, err := strconv.Atoi(c.Params("number"))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid PR number")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid PR number")
 	}
 
 	repoID, err := h.getRepoID(owner, name)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "repository not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "repository not found")
 	}
 
 	// Verify caller is PR author or repo owner
@@ -194,18 +179,15 @@ func (h *Handler) UpdatePullRequest(w http.ResponseWriter, r *http.Request) {
 		`SELECT p.author_id, r.owner_id FROM pull_requests p JOIN repositories r ON r.id = p.repo_id
 		 WHERE p.repo_id = $1 AND p.number = $2`, repoID, number).Scan(&prAuthorID, &repoOwnerID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "pull request not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "pull request not found")
 	}
 	if claims.UserID != prAuthorID && claims.UserID != repoOwnerID {
-		writeError(w, http.StatusForbidden, "only the PR author or repo owner can update this pull request")
-		return
+		return writeError(c, fiber.StatusForbidden, "only the PR author or repo owner can update this pull request")
 	}
 
 	var req updatePRRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 
 	ctx := context.Background()
@@ -230,8 +212,7 @@ func (h *Handler) UpdatePullRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(sets) == 0 {
-		w.WriteHeader(http.StatusNoContent)
-		return
+		return c.SendStatus(fiber.StatusNoContent)
 	}
 
 	sets = append(sets, "updated_at=NOW()")
@@ -240,26 +221,23 @@ func (h *Handler) UpdatePullRequest(w http.ResponseWriter, r *http.Request) {
 	args = append(args, repoID, number)
 
 	if _, err := h.db.Exec(ctx, query, args...); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to update pull request")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to update pull request")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (h *Handler) MergePullRequest(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	owner := chi.URLParam(r, "owner")
-	name := chi.URLParam(r, "name")
-	number, err := strconv.Atoi(chi.URLParam(r, "number"))
+func (h *Handler) MergePullRequest(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	owner := c.Params("owner")
+	name := c.Params("name")
+	number, err := strconv.Atoi(c.Params("number"))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid PR number")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid PR number")
 	}
 
 	repoID, err := h.getRepoID(owner, name)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "repository not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "repository not found")
 	}
 
 	// Get PR info
@@ -269,12 +247,10 @@ func (h *Handler) MergePullRequest(w http.ResponseWriter, r *http.Request) {
 		repoID, number,
 	).Scan(&pr.ID, &pr.HeadBranch, &pr.BaseBranch, &pr.State)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "pull request not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "pull request not found")
 	}
 	if pr.State != "open" {
-		writeError(w, http.StatusBadRequest, "pull request is not open")
-		return
+		return writeError(c, fiber.StatusBadRequest, "pull request is not open")
 	}
 
 	// Perform git merge
@@ -289,8 +265,7 @@ func (h *Handler) MergePullRequest(w http.ResponseWriter, r *http.Request) {
 	// First, update the target ref to include the head branch changes
 	cmd := exec.Command("git", "-C", repoDir, "merge-base", pr.BaseBranch, pr.HeadBranch)
 	if _, err := cmd.Output(); err != nil {
-		writeError(w, http.StatusBadRequest, "branches cannot be merged")
-		return
+		return writeError(c, fiber.StatusBadRequest, "branches cannot be merged")
 	}
 
 	// Update state
@@ -301,22 +276,20 @@ func (h *Handler) MergePullRequest(w http.ResponseWriter, r *http.Request) {
 		 WHERE repo_id=$3 AND number=$4`,
 		now, claims.UserID, repoID, number)
 
-	writeJSON(w, http.StatusOK, map[string]any{"merged": true})
+	return writeJSON(c, fiber.StatusOK, map[string]any{"merged": true})
 }
 
-func (h *Handler) ListPRComments(w http.ResponseWriter, r *http.Request) {
-	owner := chi.URLParam(r, "owner")
-	name := chi.URLParam(r, "name")
-	number, err := strconv.Atoi(chi.URLParam(r, "number"))
+func (h *Handler) ListPRComments(c *fiber.Ctx) error {
+	owner := c.Params("owner")
+	name := c.Params("name")
+	number, err := strconv.Atoi(c.Params("number"))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid PR number")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid PR number")
 	}
 
 	repoID, err := h.getRepoID(owner, name)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "repository not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "repository not found")
 	}
 
 	rows, err := h.db.Query(context.Background(),
@@ -327,8 +300,7 @@ func (h *Handler) ListPRComments(w http.ResponseWriter, r *http.Request) {
 		 WHERE p.repo_id = $1 AND p.number = $2
 		 ORDER BY c.created_at`, repoID, number)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list comments")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to list comments")
 	}
 	defer rows.Close()
 
@@ -344,23 +316,21 @@ func (h *Handler) ListPRComments(w http.ResponseWriter, r *http.Request) {
 	if comments == nil {
 		comments = []domain.PRComment{}
 	}
-	writeJSON(w, http.StatusOK, comments)
+	return writeJSON(c, fiber.StatusOK, comments)
 }
 
-func (h *Handler) CreatePRComment(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	owner := chi.URLParam(r, "owner")
-	name := chi.URLParam(r, "name")
-	number, err := strconv.Atoi(chi.URLParam(r, "number"))
+func (h *Handler) CreatePRComment(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	owner := c.Params("owner")
+	name := c.Params("name")
+	number, err := strconv.Atoi(c.Params("number"))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid PR number")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid PR number")
 	}
 
 	repoID, err := h.getRepoID(owner, name)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "repository not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "repository not found")
 	}
 
 	var req struct {
@@ -368,13 +338,11 @@ func (h *Handler) CreatePRComment(w http.ResponseWriter, r *http.Request) {
 		Path *string `json:"path,omitempty"`
 		Line *int    `json:"line,omitempty"`
 	}
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 	if req.Body == "" {
-		writeError(w, http.StatusBadRequest, "body is required")
-		return
+		return writeError(c, fiber.StatusBadRequest, "body is required")
 	}
 
 	var prID int64
@@ -382,8 +350,7 @@ func (h *Handler) CreatePRComment(w http.ResponseWriter, r *http.Request) {
 		`SELECT id FROM pull_requests WHERE repo_id = $1 AND number = $2`, repoID, number,
 	).Scan(&prID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "pull request not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "pull request not found")
 	}
 
 	var commentID int64
@@ -393,27 +360,24 @@ func (h *Handler) CreatePRComment(w http.ResponseWriter, r *http.Request) {
 		prID, claims.UserID, req.Body, req.Path, req.Line,
 	).Scan(&commentID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create comment")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to create comment")
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"id": commentID})
+	return writeJSON(c, fiber.StatusCreated, map[string]any{"id": commentID})
 }
 
 // PR Reviews
 
-func (h *Handler) ListPRReviews(w http.ResponseWriter, r *http.Request) {
-	owner := chi.URLParam(r, "owner")
-	name := chi.URLParam(r, "name")
-	number, err := strconv.Atoi(chi.URLParam(r, "number"))
+func (h *Handler) ListPRReviews(c *fiber.Ctx) error {
+	owner := c.Params("owner")
+	name := c.Params("name")
+	number, err := strconv.Atoi(c.Params("number"))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid PR number")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid PR number")
 	}
 
 	repoID, err := h.getRepoID(owner, name)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "repository not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "repository not found")
 	}
 
 	rows, err := h.db.Query(context.Background(),
@@ -424,8 +388,7 @@ func (h *Handler) ListPRReviews(w http.ResponseWriter, r *http.Request) {
 		 WHERE p.repo_id = $1 AND p.number = $2
 		 ORDER BY rv.created_at`, repoID, number)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list reviews")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to list reviews")
 	}
 	defer rows.Close()
 
@@ -441,39 +404,35 @@ func (h *Handler) ListPRReviews(w http.ResponseWriter, r *http.Request) {
 	if reviews == nil {
 		reviews = []domain.PRReview{}
 	}
-	writeJSON(w, http.StatusOK, reviews)
+	return writeJSON(c, fiber.StatusOK, reviews)
 }
 
-func (h *Handler) CreatePRReview(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	owner := chi.URLParam(r, "owner")
-	name := chi.URLParam(r, "name")
-	number, err := strconv.Atoi(chi.URLParam(r, "number"))
+func (h *Handler) CreatePRReview(c *fiber.Ctx) error {
+	claims := getClaims(c)
+	owner := c.Params("owner")
+	name := c.Params("name")
+	number, err := strconv.Atoi(c.Params("number"))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid PR number")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid PR number")
 	}
 
 	repoID, err := h.getRepoID(owner, name)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "repository not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "repository not found")
 	}
 
 	var req struct {
 		State string `json:"state"` // approved, changes_requested, comment
 		Body  string `json:"body"`
 	}
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 	if req.State == "" {
 		req.State = "comment"
 	}
 	if req.State != "approved" && req.State != "changes_requested" && req.State != "comment" {
-		writeError(w, http.StatusBadRequest, "state must be approved, changes_requested, or comment")
-		return
+		return writeError(c, fiber.StatusBadRequest, "state must be approved, changes_requested, or comment")
 	}
 
 	var prID int64
@@ -481,8 +440,7 @@ func (h *Handler) CreatePRReview(w http.ResponseWriter, r *http.Request) {
 		`SELECT id FROM pull_requests WHERE repo_id = $1 AND number = $2`, repoID, number,
 	).Scan(&prID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "pull request not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "pull request not found")
 	}
 
 	var reviewID int64
@@ -492,8 +450,7 @@ func (h *Handler) CreatePRReview(w http.ResponseWriter, r *http.Request) {
 		prID, claims.UserID, req.State, req.Body,
 	).Scan(&reviewID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create review")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to create review")
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"id": reviewID})
+	return writeJSON(c, fiber.StatusCreated, map[string]any{"id": reviewID})
 }

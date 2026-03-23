@@ -2,13 +2,12 @@ package handler
 
 import (
 	"bufio"
-	"net/http"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 
-	"github.com/go-chi/chi/v5"
+	"github.com/gofiber/fiber/v2"
 )
 
 // Language extension mapping
@@ -107,17 +106,16 @@ type LanguageStat struct {
 }
 
 // GetLanguages returns language statistics for a repository.
-func (h *Handler) GetLanguages(w http.ResponseWriter, r *http.Request) {
-	owner := chi.URLParam(r, "owner")
-	name := chi.URLParam(r, "name")
+func (h *Handler) GetLanguages(c *fiber.Ctx) error {
+	owner := c.Params("owner")
+	name := c.Params("name")
 	repoDir := h.repoPath(owner, name)
 
 	// Use git ls-tree to list all files with sizes
 	cmd := exec.Command("git", "-C", repoDir, "ls-tree", "-r", "-l", "HEAD")
 	out, err := cmd.Output()
 	if err != nil {
-		writeJSON(w, http.StatusOK, []LanguageStat{})
-		return
+		return writeJSON(c, fiber.StatusOK, []LanguageStat{})
 	}
 
 	langBytes := make(map[string]int64)
@@ -167,8 +165,7 @@ func (h *Handler) GetLanguages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if totalBytes == 0 {
-		writeJSON(w, http.StatusOK, []LanguageStat{})
-		return
+		return writeJSON(c, fiber.StatusOK, []LanguageStat{})
 	}
 
 	var stats []LanguageStat
@@ -195,5 +192,5 @@ func (h *Handler) GetLanguages(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, http.StatusOK, stats)
+	return writeJSON(c, fiber.StatusOK, stats)
 }

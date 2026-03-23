@@ -3,12 +3,11 @@ package handler
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/ViniZap4/devnook-server/internal/domain"
-	"github.com/go-chi/chi/v5"
+	"github.com/gofiber/fiber/v2"
 )
 
 type webhookRequest struct {
@@ -18,22 +17,20 @@ type webhookRequest struct {
 	Active *bool    `json:"active,omitempty"`
 }
 
-func (h *Handler) ListWebhooks(w http.ResponseWriter, r *http.Request) {
-	owner := chi.URLParam(r, "owner")
-	name := chi.URLParam(r, "name")
+func (h *Handler) ListWebhooks(c *fiber.Ctx) error {
+	owner := c.Params("owner")
+	name := c.Params("name")
 
 	repoID, err := h.getRepoID(owner, name)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "repository not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "repository not found")
 	}
 
 	rows, err := h.db.Query(context.Background(),
 		`SELECT id, repo_id, url, secret, events, active, created_at, updated_at
 		 FROM webhooks WHERE repo_id = $1 ORDER BY created_at DESC`, repoID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list webhooks")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to list webhooks")
 	}
 	defer rows.Close()
 
@@ -49,27 +46,24 @@ func (h *Handler) ListWebhooks(w http.ResponseWriter, r *http.Request) {
 	if hooks == nil {
 		hooks = []domain.Webhook{}
 	}
-	writeJSON(w, http.StatusOK, hooks)
+	return writeJSON(c, fiber.StatusOK, hooks)
 }
 
-func (h *Handler) CreateWebhook(w http.ResponseWriter, r *http.Request) {
-	owner := chi.URLParam(r, "owner")
-	name := chi.URLParam(r, "name")
+func (h *Handler) CreateWebhook(c *fiber.Ctx) error {
+	owner := c.Params("owner")
+	name := c.Params("name")
 
 	repoID, err := h.getRepoID(owner, name)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "repository not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "repository not found")
 	}
 
 	var req webhookRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 	if req.URL == "" {
-		writeError(w, http.StatusBadRequest, "url is required")
-		return
+		return writeError(c, fiber.StatusBadRequest, "url is required")
 	}
 	if req.Events == nil {
 		req.Events = []string{"push"}
@@ -81,23 +75,20 @@ func (h *Handler) CreateWebhook(w http.ResponseWriter, r *http.Request) {
 		repoID, req.URL, req.Secret, req.Events,
 	).Scan(&id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create webhook")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to create webhook")
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"id": id})
+	return writeJSON(c, fiber.StatusCreated, map[string]any{"id": id})
 }
 
-func (h *Handler) UpdateWebhook(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+func (h *Handler) UpdateWebhook(c *fiber.Ctx) error {
+	id, err := strconv.ParseInt(c.Params("id"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid webhook id")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid webhook id")
 	}
 
 	var req webhookRequest
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+	if err := readJSON(c, &req); err != nil {
+		return writeError(c, fiber.StatusBadRequest, "invalid request body")
 	}
 
 	ctx := context.Background()
@@ -127,8 +118,7 @@ func (h *Handler) UpdateWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(sets) == 0 {
-		w.WriteHeader(http.StatusNoContent)
-		return
+		return c.SendStatus(fiber.StatusNoContent)
 	}
 
 	sets = append(sets, "updated_at=NOW()")
@@ -137,23 +127,20 @@ func (h *Handler) UpdateWebhook(w http.ResponseWriter, r *http.Request) {
 	args = append(args, id)
 
 	if _, err := h.db.Exec(ctx, query, args...); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to update webhook")
-		return
+		return writeError(c, fiber.StatusInternalServerError, "failed to update webhook")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (h *Handler) DeleteWebhook(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+func (h *Handler) DeleteWebhook(c *fiber.Ctx) error {
+	id, err := strconv.ParseInt(c.Params("id"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid webhook id")
-		return
+		return writeError(c, fiber.StatusBadRequest, "invalid webhook id")
 	}
 
 	tag, err := h.db.Exec(context.Background(), `DELETE FROM webhooks WHERE id = $1`, id)
 	if err != nil || tag.RowsAffected() == 0 {
-		writeError(w, http.StatusNotFound, "webhook not found")
-		return
+		return writeError(c, fiber.StatusNotFound, "webhook not found")
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return c.SendStatus(fiber.StatusNoContent)
 }
