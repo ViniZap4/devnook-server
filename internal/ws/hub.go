@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fasthttp/websocket"
+	"github.com/gofiber/contrib/websocket"
 )
 
 // Event is a typed message sent over WebSocket.
@@ -283,13 +283,14 @@ func (h *Hub) GetOnlineUsernames() []string {
 	return usernames
 }
 
-// HandleWebSocket takes a pre-upgraded gorilla/websocket connection.
+// HandleWebSocket takes a gofiber/contrib websocket connection.
+// This function BLOCKS until the connection is closed (required by Fiber's websocket handler).
 func (h *Hub) HandleWebSocket(conn *websocket.Conn, userID int64, username string) {
 	client := &Client{UserID: userID, Username: username, conn: conn, send: make(chan []byte, 256)}
 	h.register <- client
 
 	go client.writePump()
-	go client.readPump(h)
+	client.readPump(h) // blocks until connection closes
 }
 
 func (c *Client) readPump(hub *Hub) {
