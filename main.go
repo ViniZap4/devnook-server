@@ -62,11 +62,12 @@ func main() {
 		}
 		allowedOrigins = strings.Join(origins, ",")
 	}
+	allowCreds := allowedOrigins != "*"
 	app.Use(cors.New(cors.Config{
 		AllowOrigins:     allowedOrigins,
 		AllowMethods:     "GET,POST,PUT,DELETE,OPTIONS",
 		AllowHeaders:     "Accept,Authorization,Content-Type",
-		AllowCredentials: true,
+		AllowCredentials: allowCreds,
 		MaxAge:           300,
 	}))
 
@@ -381,7 +382,7 @@ func main() {
 	app.Get("/ws", websocket.New(func(conn *websocket.Conn) {
 		userID := conn.Locals("ws_user_id").(int64)
 		username := conn.Locals("ws_username").(string)
-		hub.HandleWebSocket(conn.Conn, userID, username)
+		hub.HandleWebSocket(conn, userID, username)
 	}))
 
 	port := cfg.Port
